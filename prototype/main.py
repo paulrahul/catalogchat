@@ -7,7 +7,9 @@ import json
 import re
 import os
 
-from prototype.schema import discover
+from prototype.schema import discover, build_extraction_plan, correct_field_selector, summarize_dom
+from prototype.scraper import scrape_sample
+from prototype.util import fetch_html
 
 
 # -------------------------
@@ -90,6 +92,281 @@ def display_final_schema(merged_schema: dict, show_header: bool = True):
             print(f"       {field.get('description')}")
 
     print()
+
+
+def display_extraction_plan(plan: dict):
+    """Display the extraction plan in a user-friendly format."""
+    print(f"\n{'*' * 60}")
+    print("  EXTRACTION PLAN")
+    print(f"{'*' * 60}")
+
+    summary = plan.get("summary", {})
+    print(f"\n  Path: {summary.get('path')}")
+    print(f"  Depth: {summary.get('depth')} levels")
+    print(f"  Total Fields: {summary.get('total_fields')}")
+    print(f"  Item Name: {summary.get('item_name')}")
+
+    print(f"\n  Navigation Path:")
+    for level in plan.get("navigation_path", []):
+        level_num = level.get("level")
+        catalog_type = level.get("catalog_type") or f"Level {level_num}"
+        is_final = level.get("is_final_level", True)
+
+        print(f"\n    Level {level_num}: {catalog_type}")
+        print(f"      Sample URL: {level.get('sample_url')}")
+        print(f"      Item container: {level.get('item_container_selector') or 'N/A'}")
+
+        if not is_final:
+            print(f"      Drill-down link: {level.get('drill_down_link_selector') or 'N/A'}")
+        else:
+            print(f"      (Final level - no further drilling)")
+
+        if level.get("fields"):
+            print(f"      Fields at this level:")
+            for field in level.get("fields", []):
+                selector = field.get("selector") or "N/A"
+                attr = field.get("attribute", "text")
+                print(f"        - {field.get('name')}: {selector} [{attr}]")
+
+    print()
+
+
+def display_sample_data(sample_result: dict):
+    """Display sample scraped data in a table format."""
+    print(f"\n{'~' * 60}")
+    print("  SAMPLE DATA PREVIEW")
+    print(f"{'~' * 60}")
+
+    target_level = sample_result.get("target_level")
+    rows = sample_result.get("rows", [])
+    errors = sample_result.get("errors", [])
+    field_names = sample_result.get("field_names", [])
+
+    print(f"\n  Target Level: {target_level}")
+    print(f"  Rows: {len(rows)}")
+    print(f"  Fields: {len(field_names)}")
+
+    if errors:
+        print(f"\n  Warnings/Errors:")
+        for err in errors[:5]:  # Show at most 5 errors
+            print(f"    - {err}")
+
+    if not rows:
+        print("\n  No data extracted. Check that the selectors are correct.")
+        return
+
+    if not field_names:
+        print("\n  No fields defined for the levels.")
+        return
+
+    # Calculate column widths (cap at 30 chars per column for readability)
+    max_col_width = 30
+    col_widths = {}
+    for name in field_names:
+        max_width = len(name)
+        for row in rows:
+            value = str(row.get(name) or "")
+            max_width = max(max_width, min(len(value), max_col_width))
+        col_widths[name] = min(max_width + 2, max_col_width + 2)
+
+    # Print header
+    print()
+    header = "  "
+    separator = "  "
+    for name in field_names:
+        display_name = name[:max_col_width] if len(name) > max_col_width else name
+        header += display_name.ljust(col_widths[name])
+        separator += "-" * (col_widths[name] - 1) + " "
+    print(header)
+    print(separator)
+
+    # Print rows
+    for i, row in enumerate(rows, 1):
+        line = "  "
+        for name in field_names:
+            value = str(row.get(name) or "")
+            # Truncate long values
+            if len(value) > max_col_width - 3:
+                value = value[:max_col_width - 3] + "..."
+            line += value.ljust(col_widths[name])
+        print(line)
+
+    print()
+
+
+# -------------------------
+# Field Correction (CLI-specific)
+# -------------------------
+
+def collect_field_corrections(
+    sample_result: dict,
+    extraction_plan: dict,
+    on_progress=None
+) -> dict:
+    """
+    Interactive loop to collect user feedback on wrong fields and correct them using AI.
+
+    Args:
+        sample_result: The sample scrape result with rows and field_names
+        extraction_plan: The current extraction plan to update
+        on_progress: Optional progress callback
+
+    Returns:
+        Updated extraction plan with corrected selectors
+    """
+    rows = sample_result.get("rows", [])
+    field_names = sample_result.get("field_names", [])
+
+    if not rows or not field_names:
+        print("  No data to correct.")
+        return extraction_plan
+
+    # We need DOM summaries for each level to help AI correct selectors
+    # Cache them as we fetch
+    dom_cache = {}
+
+    while True:
+        print_section("Field Correction")
+        print("  Do any fields have incorrect data?")
+        print("  Enter field numbers to correct (comma-separated), or 'done' to finish.")
+        print()
+
+        # Show numbered field list with sample values
+        for i, name in enumerate(field_names, 1):
+            sample_value = rows[0].get(name) if rows else None
+            sample_str = str(sample_value)[:40] if sample_value else "(empty)"
+            if len(str(sample_value or "")) > 40:
+                sample_str += "..."
+            print(f"    {i}. {name}: {sample_str}")
+
+        choice = input("\n  Fields to correct (e.g., '1,3' or 'done'): ").strip().lower()
+
+        if choice in ("done", "d", ""):
+            break
+
+        # Parse field numbers
+        try:
+            indices = [int(x.strip()) - 1 for x in choice.split(",")]
+            selected_fields = [field_names[i] for i in indices if 0 <= i < len(field_names)]
+        except (ValueError, IndexError):
+            print("  Invalid input. Use numbers like '1,3' or 'done'.")
+            continue
+
+        if not selected_fields:
+            print("  No valid fields selected.")
+            continue
+
+        # Process each selected field
+        for field_name in selected_fields:
+            print(f"\n  Correcting field: {field_name}")
+
+            # Find current value
+            current_value = rows[0].get(field_name) if rows else None
+            print(f"  Current value: {current_value or '(empty)'}")
+
+            # Get user feedback
+            user_feedback = input("  What's wrong with this value? ").strip()
+            if not user_feedback:
+                print("  Skipping (no feedback provided).")
+                continue
+
+            expected_value = input("  What value did you expect? (example) ").strip()
+            if not expected_value:
+                print("  Skipping (no expected value provided).")
+                continue
+
+            # Find which level this field belongs to
+            field_level = None
+            field_info = None
+            for level_plan in extraction_plan.get("navigation_path", []):
+                for field in level_plan.get("fields", []):
+                    # Check both original name and mapped name
+                    level_name = level_plan.get("level_name") or level_plan.get("catalog_type")
+                    mapping_key = f"{level_name}:{field.get('name')}"
+                    mapped_name = extraction_plan.get("field_name_mapping", {}).get(mapping_key, field.get("name"))
+
+                    if mapped_name == field_name or field.get("name") == field_name:
+                        field_level = level_plan
+                        field_info = field
+                        break
+                if field_info:
+                    break
+
+            if not field_level or not field_info:
+                print(f"  Could not find field '{field_name}' in extraction plan.")
+                continue
+
+            # Get DOM summary for this level (fetch if not cached)
+            level_url = field_level.get("sample_url")
+            if level_url not in dom_cache:
+                print(f"  Fetching page to analyze DOM...")
+                try:
+                    html = fetch_html(level_url)
+                    dom_cache[level_url] = summarize_dom(html)
+                except Exception as e:
+                    print(f"  Error fetching page: {e}")
+                    continue
+
+            dom_summary = dom_cache[level_url]
+            item_container = field_level.get("item_container_selector", "")
+
+            print(f"  Asking AI to suggest a better selector...")
+
+            # Call AI to correct the selector
+            try:
+                correction = correct_field_selector(
+                    field_name=field_info.get("name"),
+                    current_selector=field_info.get("selector"),
+                    current_attribute=field_info.get("attribute", "text"),
+                    current_value=str(current_value) if current_value else "",
+                    user_feedback=user_feedback,
+                    expected_value=expected_value,
+                    dom_summary=dom_summary,
+                    item_container_selector=item_container,
+                    on_progress=on_progress
+                )
+
+                new_selector = correction.get("corrected_selector")
+                new_attribute = correction.get("corrected_attribute", "text")
+                reasoning = correction.get("reasoning", "")
+                confidence = correction.get("confidence", 0)
+
+                print(f"\n  AI Suggestion:")
+                print(f"    New selector: {new_selector or '(none)'}")
+                print(f"    Attribute: {new_attribute}")
+                print(f"    Confidence: {confidence}")
+                print(f"    Reasoning: {reasoning}")
+
+                if new_selector:
+                    apply = input("\n  Apply this correction? (yes/no) [yes]: ").strip().lower()
+                    if apply in ("yes", "y", ""):
+                        # Update the field in navigation_path
+                        field_info["selector"] = new_selector
+                        field_info["attribute"] = new_attribute
+
+                        # Also update the field in extraction_plan["fields"] (the merged schema fields)
+                        # This ensures the correction is saved to the results JSON
+                        for ext_field in extraction_plan.get("fields", []):
+                            if ext_field.get("name") == field_name:
+                                ext_field["selector"] = new_selector
+                                ext_field["attribute"] = new_attribute
+                                break
+
+                        print(f"  Updated selector for '{field_name}'.")
+                    else:
+                        print("  Correction skipped.")
+                else:
+                    print("  AI could not suggest a better selector.")
+
+            except Exception as e:
+                print(f"  Error getting AI correction: {e}")
+
+        # Ask if user wants to re-scrape to verify
+        rescrape = input("\n  Re-scrape to verify corrections? (yes/no) [yes]: ").strip().lower()
+        if rescrape in ("yes", "y", ""):
+            return extraction_plan  # Return updated plan so caller can re-scrape
+
+    return extraction_plan
 
 
 # -------------------------
@@ -215,20 +492,24 @@ def cli_select_next_link(url: str, dom_summary: dict, schema: dict, unvisited_li
     This is the CLI callback for discover()'s select_next_link parameter.
 
     Returns:
-        (should_continue: bool, selected_url: str or None)
+        (should_continue: bool, selected_url: str or None, nesting_info: dict or None)
     """
-    # Display the schema first
-    display_schema(schema)
-
     if not unvisited_links:
         print("  No unvisited links found on this page.")
-        return False, None
+        return False, None, {"is_final_level": True, "reasoning": "No links available"}
 
     print("\n  Is this the final detail level, or should we drill deeper?")
-    response = input("  Enter 'done' if this is the final level, or 'more' to go deeper: ").strip().lower()
+    print("    1. Done - This is the final level (extract detail fields)")
+    print("    2. More - Drill deeper into nested content")
+    response = input("  Select [1]: ").strip().lower()
 
-    if response in ("done", "d", ""):
-        return False, None
+    if response in ("1", "done", "d", ""):
+        # User confirmed this is final - trigger re-analysis with detail prompt
+        return False, None, {
+            "is_final_level": True,
+            "user_confirmed_final": True,
+            "reasoning": "User confirmed this is the final detail level"
+        }
 
     print("\n  Available links (excluding already visited):")
     for i, link in enumerate(unvisited_links, 1):
@@ -242,7 +523,13 @@ def cli_select_next_link(url: str, dom_summary: dict, schema: dict, unvisited_li
             if 0 <= idx < len(unvisited_links):
                 selected = unvisited_links[idx]
                 print(f"\n  Selected: {selected}")
-                return True, selected
+                nesting_info = {
+                    "is_final_level": False,
+                    "reasoning": "User selected to drill deeper",
+                    "recommended_link_index": idx,
+                    "drill_down_link_selector": None  # Not available in interactive mode
+                }
+                return True, selected, nesting_info
             else:
                 print(f"  Please enter a number between 1 and {len(unvisited_links)}")
         except ValueError:
@@ -283,6 +570,46 @@ class CLIProgressTracker:
 # Main Discovery Loop (CLI-specific wrapper)
 # -------------------------
 
+def cli_confirm_drilling(nesting_info: dict, recommended_url: str) -> str:
+    """
+    Ask user to confirm drilling deeper in auto mode.
+
+    Args:
+        nesting_info: The LLM's nesting analysis result
+        recommended_url: The URL the LLM recommends drilling into
+
+    Returns:
+        "continue" to proceed, "final" to mark current as final level, "stop" to stop
+    """
+    print_section("AI Recommendation")
+
+    reasoning = nesting_info.get("reasoning", "No reasoning provided")
+    link_reason = nesting_info.get("recommended_link_reason", "")
+    drill_selector = nesting_info.get("drill_down_link_selector", "N/A")
+
+    print(f"  The AI thinks this page has nested content to explore.")
+    print(f"\n  Reasoning: {reasoning}")
+    if link_reason:
+        print(f"  Link choice: {link_reason}")
+    print(f"  Drill-down selector: {drill_selector}")
+    print(f"\n  Recommended next URL:")
+    print(f"    {recommended_url}")
+
+    print("\n  Options:")
+    print("    1. Continue - Follow the recommended link (default)")
+    print("    2. Final   - This IS the final level, extract detail fields here")
+    print("    3. Stop    - Stop discovery here")
+
+    choice = input("\n  Select [1]: ").strip().lower()
+
+    if choice in ("2", "final", "f"):
+        return "final"
+    elif choice in ("3", "stop", "s"):
+        return "stop"
+    else:
+        return "continue"
+
+
 def run_discovery_cli(start_url: str, mode: str = "auto", max_depth: int = 10) -> dict:
     """
     Run discovery with CLI output.
@@ -311,16 +638,73 @@ def run_discovery_cli(start_url: str, mode: str = "auto", max_depth: int = 10) -
             select_next_link=cli_select_next_link
         )
     else:
-        # Auto mode: LLM selects links
+        # Auto mode: LLM selects links with user confirmation
         result = discover(
             start_url,
             max_depth=max_depth,
             on_progress=tracker.on_progress,
-            on_schema_inferred=on_schema_inferred
+            on_schema_inferred=on_schema_inferred,
+            confirm_drilling=cli_confirm_drilling
         )
 
     print_section("Building Final Schema")
     return result
+
+
+# -------------------------
+# Result Caching
+# -------------------------
+
+def get_result_filename(url: str) -> str:
+    """Get the filename for a URL's result."""
+    safe_filename = re.sub(r'[^\w\-.]', '_', url)[:100]
+    return f"results/{safe_filename}.json"
+
+
+def load_existing_result(url: str) -> dict | None:
+    """Load existing result for a URL if it exists."""
+    filename = get_result_filename(url)
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+    return None
+
+
+def check_and_prompt_reuse(url: str) -> dict | None:
+    """
+    Check if result exists for URL and prompt user to reuse or rescan.
+    Returns the existing result if user wants to reuse, None otherwise.
+    """
+    existing = load_existing_result(url)
+    if existing is None:
+        return None
+
+    print_section("Existing Result Found")
+    print(f"  A previous scan result exists for this URL.")
+
+    # Show summary of existing result
+    merged = existing.get("merged_schema", {})
+    print(f"\n  Previous scan summary:")
+    print(f"    Item Name: {merged.get('item_name')}")
+    print(f"    Nesting Depth: {merged.get('nesting_depth')} levels")
+    print(f"    Fields: {len(merged.get('fields', []))}")
+    print(f"    Path: {' -> '.join(merged.get('level_names', []))}")
+
+    print("\n  Would you like to:")
+    print("    1. Reuse existing result (recommended)")
+    print("    2. Scan afresh")
+
+    choice = input("\n  Select [1]: ").strip()
+
+    if choice == "2":
+        print("\n  Starting fresh scan...")
+        return None
+
+    print("\n  Reusing existing result...")
+    return existing
 
 
 # -------------------------
@@ -337,18 +721,23 @@ if __name__ == "__main__":
 
     test_url = input("Enter root URL: ").strip()
 
-    print("\nDiscovery Mode:")
-    print("  1. Automatic Discovery (recommended)")
-    print("     AI automatically detects nesting and follows the most likely path")
-    print("  2. Interactive Discovery")
-    print("     You manually choose which links to follow at each level")
+    # Check for existing result
+    result = check_and_prompt_reuse(test_url)
 
-    mode_choice = input("\nSelect mode [1]: ").strip()
-    mode = "interactive" if mode_choice == "2" else "auto"
+    if result is None:
+        # No existing result or user wants fresh scan
+        print("\nDiscovery Mode:")
+        print("  1. Automatic Discovery (recommended)")
+        print("     AI automatically detects nesting and follows the most likely path")
+        print("  2. Interactive Discovery")
+        print("     You manually choose which links to follow at each level")
 
-    print(f"\n  Starting {mode} discovery...")
+        mode_choice = input("\nSelect mode [1]: ").strip()
+        mode = "interactive" if mode_choice == "2" else "auto"
 
-    result = run_discovery_cli(test_url, mode=mode)
+        print(f"\n  Starting {mode} discovery...")
+
+        result = run_discovery_cli(test_url, mode=mode)
 
     # Display final schema
     display_final_schema(result["merged_schema"])
@@ -362,10 +751,93 @@ if __name__ == "__main__":
         print_section("Final Schema After Editing")
         display_final_schema(result["merged_schema"], show_header=False)
 
+    # Build and display extraction plan
+    extraction_plan = build_extraction_plan(result)
+    display_extraction_plan(extraction_plan)
+
+    # Add extraction plan to result
+    result["extraction_plan"] = extraction_plan
+
+    # Offer to show sample data
+    num_levels = len(extraction_plan.get("navigation_path", []))
+    print("  Would you like to see sample scraped data?")
+    sample_choice = input("  Enter 'yes' to preview sample data or press Enter to skip: ").strip().lower()
+
+    sample_data = None  # Will store the final sample result
+
+    if sample_choice in ("yes", "y"):
+        while True:
+            # If multiple levels, let user choose target depth
+            if num_levels > 1:
+                print(f"\n  How deep to scrape? (1-{num_levels})")
+                print("  (Scrapes from level 1 down to the selected level,")
+                print("   carrying parent-level fields as context)")
+                print()
+                for lp in extraction_plan.get("navigation_path", []):
+                    lnum = lp.get("level")
+                    ltype = lp.get("catalog_type") or f"Level {lnum}"
+                    print(f"    {lnum}. {ltype}")
+
+                level_choice = input(f"\n  Select target level [{num_levels}]: ").strip()
+                try:
+                    target_level = int(level_choice) if level_choice else num_levels
+                except ValueError:
+                    target_level = num_levels
+            else:
+                target_level = 1
+
+            # Scrape and correction loop
+            while True:
+                print(f"\n  Scraping sample data (levels 1-{target_level})...")
+                sample_result = scrape_sample(
+                    extraction_plan,
+                    target_level=target_level,
+                    max_items_per_level=1,
+                    on_progress=print_progress
+                )
+                display_sample_data(sample_result)
+
+                # Store the sample data (keep the last one scraped)
+                sample_data = sample_result
+
+                # Ask if data looks correct
+                if sample_result.get("rows"):
+                    print("  Does the extracted data look correct?")
+                    correct_choice = input("  Enter 'yes' if correct, or 'fix' to correct fields: ").strip().lower()
+
+                    if correct_choice in ("fix", "f", "no", "n"):
+                        # Run field correction
+                        extraction_plan = collect_field_corrections(
+                            sample_result,
+                            extraction_plan,
+                            on_progress=print_progress
+                        )
+                        # Update the extraction plan in result
+                        result["extraction_plan"] = extraction_plan
+                        # Loop to re-scrape
+                        continue
+                    else:
+                        # Data looks good, exit correction loop
+                        break
+                else:
+                    # No data extracted, exit correction loop
+                    break
+
+            # Ask if user wants to see another level
+            if num_levels > 1:
+                another = input("  Try a different depth? (yes/no) [no]: ").strip().lower()
+                if another not in ("yes", "y"):
+                    break
+            else:
+                break
+
+    # Add sample data to result if scraped
+    if sample_data:
+        result["sample_data"] = sample_data
+
     # Save results
     os.makedirs("results", exist_ok=True)
-    safe_filename = re.sub(r'[^\w\-.]', '_', test_url)[:100]
-    filename = f"results/{safe_filename}.json"
+    filename = get_result_filename(test_url)
 
     with open(filename, "w") as f:
         json.dump(result, f, indent=2)
