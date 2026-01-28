@@ -9,17 +9,19 @@ from bs4 import BeautifulSoup
 from prototype.util import fetch_html, resolve_url
 
 
-def extract_field_value(item_element, field: dict) -> str | None:
+def extract_field_value(soup_or_element, field: dict, fallback_container=None) -> str | None:
     """
-    Extract a field value from an item element using selector and attribute.
+    Extract a field value using container_selector and selector.
 
     Args:
-        item_element: BeautifulSoup element for the item container
-        field: Field definition with 'selector' and 'attribute' keys
+        soup_or_element: BeautifulSoup soup object or element to search within
+        field: Field definition with 'container_selector', 'selector', and 'attribute' keys
+        fallback_container: Element to use if field has no container_selector
 
     Returns:
         Extracted value or None
     """
+    container_selector = field.get("container_selector")
     selector = field.get("selector")
     attribute = field.get("attribute", "text")
 
@@ -27,7 +29,21 @@ def extract_field_value(item_element, field: dict) -> str | None:
         return None
 
     try:
-        element = item_element.select_one(selector)
+        # Determine the container to search within
+        if container_selector:
+            # Field has its own container - search from soup/element root
+            container = soup_or_element.select_one(container_selector)
+            if not container:
+                return None
+        elif fallback_container is not None:
+            # Use the fallback container (e.g., item_container for list pages)
+            container = fallback_container
+        else:
+            # No container specified, search from root
+            container = soup_or_element
+
+        # Find the field element within the container
+        element = container.select_one(selector)
         if element:
             if attribute == "text":
                 value = " ".join(element.stripped_strings)
@@ -76,7 +92,9 @@ def extract_items_from_page(html: str, level_plan: dict, base_url: str, field_na
         row = {}
         for field in fields:
             original_name = field.get("name")
-            value = extract_field_value(item, field)
+            # Pass soup for fields with their own container_selector,
+            # and item as fallback for fields without container_selector
+            value = extract_field_value(soup, field, fallback_container=item)
 
             # Map to merged field name if mapping exists
             if field_name_mapping:
@@ -118,6 +136,11 @@ def extract_items_from_page(html: str, level_plan: dict, base_url: str, field_na
                 except Exception:
                     pass
 
+        # If there's a 'url' field that's null but we have a drill_url, use the drill_url
+        # This handles cases where the url selector was wrong but drill-down worked
+        if drill_url and row.get("url") is None and "url" in [f.get("name") for f in fields]:
+            row["url"] = drill_url
+
         results.append({
             "fields": row,
             "drill_url": drill_url
@@ -132,7 +155,9 @@ def scrape_level(
     current_level: int = 1,
     current_url: str = None,
     parent_context: dict = None,
-    max_items_per_level: int = 1,
+    max_items_per_level: int = None,
+    max_total_rows: int = None,
+    rows_collected: list = None,
     on_progress=None
 ) -> list:
     """
@@ -147,7 +172,9 @@ def scrape_level(
         current_level: Current level being processed (internal use)
         current_url: URL to scrape (internal use, defaults to level's sample_url)
         parent_context: Fields from parent levels (internal use)
-        max_items_per_level: Max items to process per level (for sampling)
+        max_items_per_level: Max items to process per level (legacy, used if max_total_rows not set)
+        max_total_rows: Stop when this many total rows are collected (takes precedence)
+        rows_collected: Mutable list tracking collected rows (internal use)
         on_progress: Optional callback(step, detail)
 
     Returns:
@@ -155,6 +182,14 @@ def scrape_level(
     """
     navigation_path = extraction_plan.get("navigation_path", [])
     field_name_mapping = extraction_plan.get("field_name_mapping", {})
+
+    # Initialize rows_collected tracker on first call
+    if rows_collected is None:
+        rows_collected = []
+
+    # Check if we've already collected enough rows
+    if max_total_rows is not None and len(rows_collected) >= max_total_rows:
+        return []
 
     # Find current level plan
     level_plan = None
@@ -209,21 +244,46 @@ def scrape_level(
             on_progress("Warning", f"No items found with selector: {item_selector[:40]}")
         return []
 
-    if on_progress:
-        on_progress(f"Found {len(items)} items", f"processing up to {max_items_per_level}")
-
-    # Limit items for sampling
-    items = items[:max_items_per_level]
+    # Determine how many items to process
+    if max_total_rows is not None:
+        # Calculate remaining rows needed
+        remaining = max_total_rows - len(rows_collected)
+        if remaining <= 0:
+            return []
+        # Process enough items to potentially reach the target
+        # (we may need more at higher levels since not all drill-downs succeed)
+        items_to_process = items
+        if on_progress:
+            on_progress(f"Found {len(items)} items", f"need {remaining} more rows")
+    elif max_items_per_level is not None:
+        items_to_process = items[:max_items_per_level]
+        if on_progress:
+            on_progress(f"Found {len(items)} items", f"processing up to {max_items_per_level}")
+    else:
+        items_to_process = items
+        if on_progress:
+            on_progress(f"Found {len(items)} items", "processing all")
 
     results = []
 
-    for item in items:
+    for item in items_to_process:
+        # Check if we've collected enough rows
+        if max_total_rows is not None and len(rows_collected) >= max_total_rows:
+            break
+
         # Merge parent context with this item's fields
         item_context = {**parent_context, **item["fields"]}
 
         if current_level >= target_level:
             # We've reached the target level - add this row to results
             results.append(item_context)
+            rows_collected.append(item_context)
+
+            # Check if we've hit the limit
+            if max_total_rows is not None and len(rows_collected) >= max_total_rows:
+                if on_progress:
+                    on_progress("Target reached", f"{len(rows_collected)} rows collected")
+                break
         else:
             # Need to go deeper - follow drill URL
             drill_url = item.get("drill_url")
@@ -236,6 +296,8 @@ def scrape_level(
                     current_url=drill_url,
                     parent_context=item_context,
                     max_items_per_level=max_items_per_level,
+                    max_total_rows=max_total_rows,
+                    rows_collected=rows_collected,
                     on_progress=on_progress
                 )
                 results.extend(child_rows)
@@ -244,6 +306,11 @@ def scrape_level(
                 if on_progress and current_level < target_level:
                     on_progress("Warning", f"No drill-down URL found, stopping at level {current_level}")
                 results.append(item_context)
+                rows_collected.append(item_context)
+
+                # Check if we've hit the limit
+                if max_total_rows is not None and len(rows_collected) >= max_total_rows:
+                    break
 
     return results
 
@@ -251,7 +318,8 @@ def scrape_level(
 def scrape_sample(
     extraction_plan: dict,
     target_level: int = None,
-    max_items_per_level: int = 1,
+    max_items_per_level: int = None,
+    max_total_rows: int = None,
     on_progress=None
 ) -> dict:
     """
@@ -264,8 +332,13 @@ def scrape_sample(
     Args:
         extraction_plan: The extraction plan from build_extraction_plan()
         target_level: Deepest level to scrape (defaults to max level in plan)
-        max_items_per_level: Max items to process at each level (default 5)
+        max_items_per_level: Max items to process at each level (legacy mode)
+        max_total_rows: Stop when exactly this many total rows are collected (preferred)
         on_progress: Optional callback(step, detail)
+
+    Note:
+        If max_total_rows is specified, it takes precedence over max_items_per_level.
+        The scraper will stop as soon as the exact number of rows is reached.
 
     Returns:
         Dict containing:
@@ -300,7 +373,12 @@ def scrape_sample(
         }
 
     if on_progress:
-        on_progress("Starting hierarchical scrape", f"levels 1-{target_level}")
+        if max_total_rows is not None:
+            on_progress("Starting hierarchical scrape", f"levels 1-{target_level}, target: {max_total_rows} rows")
+        elif max_items_per_level is not None:
+            on_progress("Starting hierarchical scrape", f"levels 1-{target_level}, {max_items_per_level} items/level")
+        else:
+            on_progress("Starting hierarchical scrape", f"levels 1-{target_level}")
 
     # Use final_field_names from extraction plan as the authoritative list
     # This ensures we only return fields that are in the merged schema
@@ -348,6 +426,7 @@ def scrape_sample(
             extraction_plan=extraction_plan,
             target_level=target_level,
             max_items_per_level=max_items_per_level,
+            max_total_rows=max_total_rows,
             on_progress=on_progress
         )
     except Exception as e:

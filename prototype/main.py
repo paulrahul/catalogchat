@@ -7,9 +7,9 @@ import json
 import re
 import os
 
-from prototype.schema import discover, build_extraction_plan, correct_field_selector, summarize_dom
+from prototype.schema import discover, build_extraction_plan, correct_field_selector, summarize_dom, find_value_in_html
 from prototype.scraper import scrape_sample
-from prototype.util import fetch_html
+from prototype.util import fetch_html, set_model, get_model, AVAILABLE_MODELS
 
 
 # -------------------------
@@ -296,19 +296,37 @@ def collect_field_corrections(
                 print(f"  Could not find field '{field_name}' in extraction plan.")
                 continue
 
-            # Get DOM summary for this level (fetch if not cached)
+            # Get DOM summary and HTML for this level (fetch if not cached)
             level_url = field_level.get("sample_url")
             if level_url not in dom_cache:
                 print(f"  Fetching page to analyze DOM...")
                 try:
                     html = fetch_html(level_url)
-                    dom_cache[level_url] = summarize_dom(html)
+                    dom_cache[level_url] = {
+                        "html": html,
+                        "dom_summary": summarize_dom(html)
+                    }
                 except Exception as e:
                     print(f"  Error fetching page: {e}")
                     continue
 
-            dom_summary = dom_cache[level_url]
+            cached = dom_cache[level_url]
+            dom_summary = cached["dom_summary"]
+            html = cached["html"]
             item_container = field_level.get("item_container_selector", "")
+
+            # Search for the expected value in the HTML
+            print(f"  Searching for '{expected_value}' in the page...")
+            found_elements = find_value_in_html(html, expected_value)
+
+            if found_elements:
+                print(f"  Found {len(found_elements)} element(s) containing the expected value:")
+                for i, elem in enumerate(found_elements[:3], 1):  # Show first 3
+                    selector_hint = elem.get("selector_hint", "?")
+                    text_preview = elem.get("text_preview", "")[:50]
+                    print(f"    {i}. {selector_hint}: \"{text_preview}...\"")
+            else:
+                print(f"  Expected value not found in page (may be formatted differently)")
 
             print(f"  Asking AI to suggest a better selector...")
 
@@ -316,6 +334,7 @@ def collect_field_corrections(
             try:
                 correction = correct_field_selector(
                     field_name=field_info.get("name"),
+                    current_container_selector=field_info.get("container_selector"),
                     current_selector=field_info.get("selector"),
                     current_attribute=field_info.get("attribute", "text"),
                     current_value=str(current_value) if current_value else "",
@@ -323,16 +342,19 @@ def collect_field_corrections(
                     expected_value=expected_value,
                     dom_summary=dom_summary,
                     item_container_selector=item_container,
+                    found_elements=found_elements,
                     on_progress=on_progress
                 )
 
+                new_container_selector = correction.get("corrected_container_selector")
                 new_selector = correction.get("corrected_selector")
                 new_attribute = correction.get("corrected_attribute", "text")
                 reasoning = correction.get("reasoning", "")
                 confidence = correction.get("confidence", 0)
 
                 print(f"\n  AI Suggestion:")
-                print(f"    New selector: {new_selector or '(none)'}")
+                print(f"    Container selector: {new_container_selector or '(use item container)'}")
+                print(f"    Field selector: {new_selector or '(none)'}")
                 print(f"    Attribute: {new_attribute}")
                 print(f"    Confidence: {confidence}")
                 print(f"    Reasoning: {reasoning}")
@@ -341,6 +363,7 @@ def collect_field_corrections(
                     apply = input("\n  Apply this correction? (yes/no) [yes]: ").strip().lower()
                     if apply in ("yes", "y", ""):
                         # Update the field in navigation_path
+                        field_info["container_selector"] = new_container_selector
                         field_info["selector"] = new_selector
                         field_info["attribute"] = new_attribute
 
@@ -348,11 +371,12 @@ def collect_field_corrections(
                         # This ensures the correction is saved to the results JSON
                         for ext_field in extraction_plan.get("fields", []):
                             if ext_field.get("name") == field_name:
+                                ext_field["container_selector"] = new_container_selector
                                 ext_field["selector"] = new_selector
                                 ext_field["attribute"] = new_attribute
                                 break
 
-                        print(f"  Updated selector for '{field_name}'.")
+                        print(f"  Updated selectors for '{field_name}'.")
                     else:
                         print("  Correction skipped.")
                 else:
@@ -652,6 +676,38 @@ def run_discovery_cli(start_url: str, mode: str = "auto", max_depth: int = 10) -
 
 
 # -------------------------
+# Model Selection (CLI-specific)
+# -------------------------
+
+def select_model_interactive():
+    """Let user select which LLM model to use."""
+    print_section("Model Selection")
+    print("  Select the AI model to use for schema inference:")
+    print()
+
+    for i, (model_id, description) in enumerate(AVAILABLE_MODELS, 1):
+        print(f"    {i}. {description}")
+
+    print()
+    choice = input("  Select model [1]: ").strip()
+
+    try:
+        idx = int(choice) - 1 if choice else 0
+        if 0 <= idx < len(AVAILABLE_MODELS):
+            model_id, description = AVAILABLE_MODELS[idx]
+            set_model(model_id)
+            print(f"\n  Using model: {model_id}")
+            return
+    except ValueError:
+        pass
+
+    # Default to first option
+    model_id, _ = AVAILABLE_MODELS[0]
+    set_model(model_id)
+    print(f"\n  Using default model: {model_id}")
+
+
+# -------------------------
 # Result Caching
 # -------------------------
 
@@ -719,7 +775,10 @@ if __name__ == "__main__":
 +==============================================================+
     """)
 
-    test_url = input("Enter root URL: ").strip()
+    # Let user select model
+    select_model_interactive()
+
+    test_url = input("\nEnter root URL: ").strip()
 
     # Check for existing result
     result = check_and_prompt_reuse(test_url)
@@ -792,7 +851,7 @@ if __name__ == "__main__":
                 sample_result = scrape_sample(
                     extraction_plan,
                     target_level=target_level,
-                    max_items_per_level=1,
+                    max_total_rows=1,
                     on_progress=print_progress
                 )
                 display_sample_data(sample_result)
@@ -817,7 +876,37 @@ if __name__ == "__main__":
                         # Loop to re-scrape
                         continue
                     else:
-                        # Data looks good, exit correction loop
+                        # Data looks good - ask if user wants more rows
+                        while True:
+                            print("\n  Would you like to fetch more sample rows?")
+                            more_choice = input("  Enter exact number of total rows to fetch, or 'done' to finish: ").strip().lower()
+
+                            if more_choice in ("done", "d", ""):
+                                break
+
+                            try:
+                                num_rows = int(more_choice)
+                                if num_rows <= 0:
+                                    print("  Please enter a positive number.")
+                                    continue
+
+                                print(f"\n  Fetching exactly {num_rows} rows (levels 1-{target_level})...")
+                                sample_result = scrape_sample(
+                                    extraction_plan,
+                                    target_level=target_level,
+                                    max_total_rows=num_rows,
+                                    on_progress=print_progress
+                                )
+                                display_sample_data(sample_result)
+
+                                # Update stored sample data
+                                sample_data = sample_result
+
+                            except ValueError:
+                                print("  Invalid input. Enter a number or 'done'.")
+                                continue
+
+                        # Exit the correction loop
                         break
                 else:
                     # No data extracted, exit correction loop
@@ -839,8 +928,8 @@ if __name__ == "__main__":
     os.makedirs("results", exist_ok=True)
     filename = get_result_filename(test_url)
 
-    with open(filename, "w") as f:
-        json.dump(result, f, indent=2)
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
 
     print(f"\n  Results saved to: {filename}")
     print("\nDiscovery complete!")

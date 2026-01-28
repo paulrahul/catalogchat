@@ -12,6 +12,28 @@ from openai import OpenAI
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Default model - can be changed by calling set_model()
+_current_model = "gpt-4o-mini"
+
+# Available models for selection
+AVAILABLE_MODELS = [
+    ("gpt-4o-mini", "GPT-4o Mini - Fast and cost-effective (default)"),
+    ("gpt-4o", "GPT-4o - More capable, higher cost"),
+    ("gpt-4-turbo", "GPT-4 Turbo - Powerful, higher cost"),
+    ("o1-mini", "o1-mini - Reasoning model, slower but more thorough"),
+]
+
+
+def set_model(model: str):
+    """Set the model to use for LLM calls."""
+    global _current_model
+    _current_model = model
+
+
+def get_model() -> str:
+    """Get the current model being used."""
+    return _current_model
+
 
 # -------------------------
 # HTTP Functions
@@ -47,7 +69,7 @@ def fetch_html(url: str, on_progress=None) -> str:
 # LLM Functions
 # -------------------------
 
-def call_llm(prompt: str, purpose: str = "", on_progress=None) -> dict:
+def call_llm(prompt: str, purpose: str = "", on_progress=None, model: str = None) -> dict:
     """
     Call the LLM with a prompt and return parsed JSON response.
 
@@ -55,23 +77,46 @@ def call_llm(prompt: str, purpose: str = "", on_progress=None) -> dict:
         prompt: The prompt to send to the LLM
         purpose: Description of what this call is for (for progress reporting)
         on_progress: Optional callback(step, detail) for progress reporting
+        model: Model to use (defaults to current model set by set_model())
 
     Returns:
         Parsed JSON response as a dict
     """
+    import re
+
+    model_to_use = model or _current_model
+
     if on_progress:
-        on_progress("Analyzing with AI", purpose)
+        on_progress("Analyzing with AI", f"{purpose} [{model_to_use}]")
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=model_to_use,
         messages=[
-            {"role": "system", "content": "You extract structured information from web pages. Always respond with valid JSON only."},
+            {"role": "system", "content": "You extract structured information from web pages. Always respond with valid JSON only. Do not wrap in markdown code blocks."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.2
     )
     content = response.choices[0].message.content
-    return json.loads(content)
+
+    if not content:
+        raise ValueError(f"LLM returned empty response for: {purpose}")
+
+    # Strip markdown code blocks if present (some models wrap JSON in ```json ... ```)
+    content = content.strip()
+    if content.startswith("```"):
+        # Remove opening code fence (with optional language identifier)
+        content = re.sub(r"^```(?:json)?\s*\n?", "", content)
+        # Remove closing code fence
+        content = re.sub(r"\n?```\s*$", "", content)
+        content = content.strip()
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        # Provide more context in the error
+        preview = content[:200] + "..." if len(content) > 200 else content
+        raise ValueError(f"LLM returned invalid JSON for '{purpose}': {e}\nResponse preview: {preview}")
 
 
 # -------------------------
