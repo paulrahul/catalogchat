@@ -44,6 +44,8 @@ from catalog.extraction import (
     scrape_all,
     analyze_sample,
     apply_field_fix,
+    find_field_in_plan,
+    prepare_field_correction,
 )
 
 from catalog.state import (
@@ -79,6 +81,8 @@ __all__ = [
     "scrape_all",
     "analyze_sample",
     "apply_field_fix",
+    "find_field_in_plan",
+    "prepare_field_correction",
     # State
     "save_state",
     "load_state",

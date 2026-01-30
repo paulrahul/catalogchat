@@ -21,9 +21,11 @@ from catalog import (
     build_extraction_plan,
     scrape_sample,
     apply_schema_edits,
+    apply_field_fix,
+    prepare_field_correction,
 )
 from catalog.util import set_model, get_model, AVAILABLE_MODELS, fetch_html
-from catalog.schema import summarize_dom, correct_field_selector, find_value_in_html
+from catalog.schema import correct_field_selector
 from catalog.state import save_state, load_state, get_result_path
 
 
@@ -145,7 +147,7 @@ def display_extraction_plan(plan: ExtractionPlan):
 
 
 def display_sample_data(sample: SampleResult):
-    """Display sample scraped data in a table format."""
+    """Display sample scraped data as JSON."""
     print(f"\n{'~' * 60}")
     print("  SAMPLE DATA PREVIEW")
     print(f"{'~' * 60}")
@@ -167,36 +169,12 @@ def display_sample_data(sample: SampleResult):
         print("\n  No fields defined for the levels.")
         return
 
-    # Calculate column widths
-    max_col_width = 30
-    col_widths = {}
-    for name in sample.field_names:
-        max_width = len(name)
-        for row in sample.rows:
-            value = str(row.get(name) or "")
-            max_width = max(max_width, min(len(value), max_col_width))
-        col_widths[name] = min(max_width + 2, max_col_width + 2)
-
-    # Print header
+    # Display each row as formatted JSON
     print()
-    header = "  "
-    separator = "  "
-    for name in sample.field_names:
-        display_name = name[:max_col_width] if len(name) > max_col_width else name
-        header += display_name.ljust(col_widths[name])
-        separator += "-" * (col_widths[name] - 1) + " "
-    print(header)
-    print(separator)
-
-    # Print rows
-    for row in sample.rows:
-        line = "  "
-        for name in sample.field_names:
-            value = str(row.get(name) or "")
-            if len(value) > max_col_width - 3:
-                value = value[: max_col_width - 3] + "..."
-            line += value.ljust(col_widths[name])
-        print(line)
+    for i, row in enumerate(sample.rows, 1):
+        print(f"  --- Row {i} ---")
+        print(json.dumps(row, indent=4, ensure_ascii=False))
+        print()
 
     print()
 
@@ -298,6 +276,10 @@ def collect_field_corrections(
 ) -> ExtractionPlan:
     """
     Interactive loop to collect user feedback on wrong fields and correct them using AI.
+
+    This is a thin CLI wrapper that:
+    - Displays field values and collects user input
+    - Delegates to core library for field lookup, DOM analysis, and correction
     """
     rows = sample.rows
     field_names = sample.field_names
@@ -306,8 +288,8 @@ def collect_field_corrections(
         print("  No data to correct.")
         return extraction_plan
 
-    # Cache DOM summaries
-    dom_cache = {}
+    # Cache HTML by URL
+    html_cache = {}
 
     while True:
         print_section("Field Correction")
@@ -355,51 +337,44 @@ def collect_field_corrections(
                 print("  Skipping (no expected value provided).")
                 continue
 
-            # Find which level this field belongs to
-            field_level = None
-            field_info = None
-            for level_plan in extraction_plan.navigation_path:
-                level_name = level_plan.level_name or level_plan.catalog_type
-                for field in level_plan.fields:
-                    mapping_key = f"{level_name}:{field.name}"
-                    mapped_name = extraction_plan.field_name_mapping.get(mapping_key, field.name)
+            # Use core library to prepare correction context
+            # First, we need HTML - find which level this field belongs to
+            from catalog import find_field_in_plan
+            level_plan, field_info = find_field_in_plan(extraction_plan, field_name)
 
-                    if mapped_name == field_name or field.name == field_name:
-                        field_level = level_plan
-                        field_info = field
-                        break
-                if field_info:
-                    break
-
-            if not field_level or not field_info:
+            if not level_plan or not field_info:
                 print(f"  Could not find field '{field_name}' in extraction plan.")
                 continue
 
-            # Get DOM summary for this level
-            level_url = field_level.sample_url
-            if level_url not in dom_cache:
-                print(f"  Fetching page to analyze DOM...")
+            level_url = level_plan.sample_url
+            if level_url not in html_cache:
+                print(f"  Fetching page...")
                 try:
-                    html = fetch_html(level_url)
-                    dom_cache[level_url] = {
-                        "html": html,
-                        "dom_summary": summarize_dom(html),
-                    }
+                    html_cache[level_url] = fetch_html(level_url)
                 except Exception as e:
                     print(f"  Error fetching page: {e}")
                     continue
 
-            cached = dom_cache[level_url]
-            dom_summary = cached["dom_summary"]
-            html = cached["html"]
-            item_container = field_level.item_container_selector or ""
+            html = html_cache[level_url]
 
-            # Search for expected value in HTML
-            print(f"  Searching for '{expected_value}' in the page...")
-            found_elements = find_value_in_html(html, expected_value)
+            # Use core library to prepare correction context
+            print(f"  Analyzing page structure...")
+            context = prepare_field_correction(
+                extraction_plan=extraction_plan,
+                field_name=field_name,
+                expected_value=expected_value,
+                html=html,
+                on_progress=on_progress,
+            )
 
+            if not context:
+                print(f"  Could not prepare correction context.")
+                continue
+
+            # Display found elements to user
+            found_elements = context["found_elements"]
             if found_elements:
-                print(f"  Found {len(found_elements)} element(s):")
+                print(f"  Found {len(found_elements)} element(s) matching '{expected_value}':")
                 for i, elem in enumerate(found_elements[:3], 1):
                     selector_hint = elem.get("selector_hint", "?")
                     text_preview = elem.get("text_preview", "")[:50]
@@ -409,7 +384,7 @@ def collect_field_corrections(
 
             print(f"  Asking AI to suggest a better selector...")
 
-            # Call AI to correct the selector
+            # Call AI to correct the selector (core library function)
             try:
                 correction = correct_field_selector(
                     field_name=field_info.name,
@@ -419,8 +394,8 @@ def collect_field_corrections(
                     current_value=str(current_value) if current_value else "",
                     user_feedback=user_feedback,
                     expected_value=expected_value,
-                    dom_summary=dom_summary,
-                    item_container_selector=item_container,
+                    dom_summary=context["dom_summary"],
+                    item_container_selector=context["item_container_selector"],
                     found_elements=found_elements,
                     on_progress=on_progress,
                 )
@@ -439,21 +414,18 @@ def collect_field_corrections(
                 print(f"    Reasoning: {reasoning}")
 
                 if new_selector:
-                    apply = input("\n  Apply this fix? (y/n) [y]: ").strip().lower()
-                    if apply != "n":
-                        # Update the field
-                        field_info.container_selector = new_container_selector
-                        field_info.selector = new_selector
-                        field_info.attribute = new_attribute
-
-                        # Also update in extraction_plan.fields
-                        for ext_field in extraction_plan.fields:
-                            if ext_field.name == field_name:
-                                ext_field.container_selector = new_container_selector
-                                ext_field.selector = new_selector
-                                ext_field.attribute = new_attribute
-                                break
-
+                    apply_choice = input("\n  Apply this fix? (y/n) [y]: ").strip().lower()
+                    if apply_choice != "n":
+                        # Use core library to apply the fix
+                        extraction_plan = apply_field_fix(
+                            extraction_plan=extraction_plan,
+                            field_name=field_name,
+                            fix={
+                                "container_selector": new_container_selector,
+                                "selector": new_selector,
+                                "attribute": new_attribute,
+                            },
+                        )
                         print(f"  Updated '{field_name}'.")
                     else:
                         print("  Skipped.")

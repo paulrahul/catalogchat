@@ -650,6 +650,84 @@ def analyze_sample(
     )
 
 
+def find_field_in_plan(
+    extraction_plan: ExtractionPlan,
+    field_name: str,
+) -> tuple[LevelPlan | None, Field | None]:
+    """
+    Find a field in the extraction plan by its merged name.
+
+    Args:
+        extraction_plan: The extraction plan to search
+        field_name: The merged field name to find
+
+    Returns:
+        Tuple of (LevelPlan, Field) where the field was found, or (None, None) if not found
+    """
+    for level_plan in extraction_plan.navigation_path:
+        level_name = level_plan.level_name or level_plan.catalog_type
+        for field in level_plan.fields:
+            # Check if this field maps to the requested field_name
+            mapping_key = f"{level_name}:{field.name}"
+            mapped_name = extraction_plan.field_name_mapping.get(mapping_key, field.name)
+
+            if mapped_name == field_name or field.name == field_name:
+                return level_plan, field
+
+    return None, None
+
+
+def prepare_field_correction(
+    extraction_plan: ExtractionPlan,
+    field_name: str,
+    expected_value: str,
+    html: str,
+    on_progress=None,
+) -> dict | None:
+    """
+    Prepare context for correcting a field selector.
+
+    This is a convenience function that:
+    1. Finds the field in the extraction plan
+    2. Summarizes the DOM
+    3. Searches for the expected value in the HTML
+
+    Args:
+        extraction_plan: The extraction plan
+        field_name: Name of the field to correct
+        expected_value: The value the user expects to see
+        html: The HTML content of the page
+        on_progress: Optional callback
+
+    Returns:
+        Dict with field_info, level_plan, dom_summary, found_elements, or None if field not found
+    """
+    from catalog.schema import summarize_dom, find_value_in_html
+
+    # Find the field
+    level_plan, field_info = find_field_in_plan(extraction_plan, field_name)
+    if not level_plan or not field_info:
+        return None
+
+    # Summarize DOM
+    if on_progress:
+        on_progress("Analyzing page structure", "")
+    dom_summary = summarize_dom(html, on_progress=on_progress)
+
+    # Search for expected value
+    if on_progress:
+        on_progress("Searching for expected value", expected_value[:30])
+    found_elements = find_value_in_html(html, expected_value)
+
+    return {
+        "field_info": field_info,
+        "level_plan": level_plan,
+        "dom_summary": dom_summary,
+        "found_elements": found_elements,
+        "item_container_selector": level_plan.item_container_selector or "",
+    }
+
+
 def apply_field_fix(
     extraction_plan: ExtractionPlan,
     field_name: str,

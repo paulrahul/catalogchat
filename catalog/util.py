@@ -120,18 +120,6 @@ def call_llm(
         ],
         temperature=0.2,
     )
-    # Debug: dump raw response for inspection
-    try:
-        print("LLM raw response object:", response)
-        print("LLM choice 0:", response.choices[0])
-        print("LLM raw content (repr):", repr(response.choices[0].message.content))
-        print("LLM finish_reason:", getattr(response.choices[0], "finish_reason", None))
-        # optional: if SDK supports to_dict()
-        # print("LLM response JSON:", json.dumps(response.to_dict(), indent=2)[:4000])
-    except (AttributeError, IndexError, TypeError) as e:
-        # Ensure debugging doesn't raise and break normal flow
-        print("LLM debug print failed:", e)
-
     content = response.choices[0].message.content
 
     if not content:
