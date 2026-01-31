@@ -20,6 +20,46 @@ class DecisionType(Enum):
     SCRAPE_MORE = "scrape_more"
 
 
+# Decision ID constants - stable semantic identifiers for routing
+class DecisionId:
+    """
+    Stable semantic identifiers for decision types.
+
+    These IDs are used for routing in the generic wait_response API.
+    They should remain stable across versions.
+    """
+    # Discovery phase decisions
+    CONFIRM_DRILLING = "confirm_drilling"
+    SELECT_LINK = "select_link"
+    CONFIRM_FINAL_LEVEL = "confirm_final_level"
+
+    # Sample/extraction phase decisions
+    FIX_FIELD = "fix_field"
+    EDIT_SCHEMA = "edit_schema"
+    SCRAPE_MORE = "scrape_more"
+
+    # Plan phase decisions (future)
+    REUSE_EXISTING_PLAN = "reuse_existing_plan"
+    CHOOSE_NEXT_LINK = "choose_next_link"
+    CONFIRM_SAMPLE_DATA = "confirm_sample_data"
+
+
+# Step identifiers for tracking which phase the decision is from
+class DecisionStep:
+    """
+    Identifiers for the phase/step where a decision was created.
+
+    Useful for debugging, logging, and analytics.
+    """
+    PLAN_CHECK = "plan_check"
+    DISCOVERY = "discovery"
+    SCHEMA_INFERENCE = "schema_inference"
+    NESTING_ANALYSIS = "nesting_analysis"
+    SAMPLE_ANALYSIS = "sample_analysis"
+    FIELD_CORRECTION = "field_correction"
+    EXTRACTION = "extraction"
+
+
 @dataclass
 class Decision:
     """
@@ -28,16 +68,35 @@ class Decision:
     This is the core mechanism for human-in-the-loop interactions.
     Instead of blocking for input, functions return Decision objects
     that describe what input is needed.
+
+    Attributes:
+        id: Stable semantic identifier for this decision type (e.g., "confirm_drilling").
+            Used for routing in the wait_response API.
+        type: The DecisionType enum value (for backward compatibility).
+        step: The phase/step where this decision was created (e.g., "discovery").
+        prompt: Human-readable question to ask the user.
+        options: Available choices (action values like "continue", "final", "stop").
+        input_schema: JSON schema for complex input (when options aren't sufficient).
+        context: Additional context for the UI to render the decision.
     """
     type: DecisionType
     prompt: str
     options: list[str] | None = None
     input_schema: dict | None = None
     context: dict = field(default_factory=dict)
+    id: str | None = None  # Semantic decision ID
+    step: str | None = None  # Phase/step identifier
+
+    def __post_init__(self):
+        """Auto-generate id from type if not provided."""
+        if self.id is None:
+            self.id = self.type.value
 
     def to_dict(self) -> dict:
         return {
+            "id": self.id,
             "type": self.type.value,
+            "step": self.step,
             "prompt": self.prompt,
             "options": self.options,
             "input_schema": self.input_schema,
@@ -52,6 +111,8 @@ class Decision:
             options=data.get("options"),
             input_schema=data.get("input_schema"),
             context=data.get("context", {}),
+            id=data.get("id"),
+            step=data.get("step"),
         )
 
 

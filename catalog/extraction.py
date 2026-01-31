@@ -18,6 +18,8 @@ from catalog.types import (
     SampleResult,
     Decision,
     DecisionType,
+    DecisionId,
+    DecisionStep,
     Field,
     LevelPlan,
 )
@@ -639,7 +641,9 @@ def analyze_sample(
         return None
 
     return Decision(
+        id=DecisionId.FIX_FIELD,
         type=DecisionType.FIX_FIELD,
+        step=DecisionStep.SAMPLE_ANALYSIS,
         prompt="Some fields may have incorrect selectors. Would you like to fix them?",
         options=["fix", "skip"],
         context={

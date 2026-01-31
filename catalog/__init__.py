@@ -13,6 +13,8 @@ web APIs, Streamlit apps, or any other interface.
 from catalog.types import (
     CatalogPlan,
     DecisionType,
+    DecisionId,
+    DecisionStep,
     DiscoveryState,
     ExtractionPlan,
     SampleResult,
@@ -62,6 +64,9 @@ __all__ = [
     "ExtractionPlan",
     "SampleResult",
     "Decision",
+    "DecisionType",
+    "DecisionId",
+    "DecisionStep",
     "Field",
     "LevelPlan",
     # Plan management

@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CatalogChat - n8n Workflow UI</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+      color: #333;
+    }
+
+    h1 {
+      color: #2d3748;
+      margin-bottom: 24px;
+    }
+
+    .form-section {
+      background: white;
+      padding: 24px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+      color: #4a5568;
+    }
+
+    input[type="text"], select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+
+    input[type="text"]:focus, select:focus {
+      outline: none;
+      border-color: #4299e1;
+      box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.2);
+    }
+
+    button {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .btn-primary {
+      background: #4299e1;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #3182ce;
+    }
+
+    .btn-primary:disabled {
+      background: #a0aec0;
+      cursor: not-allowed;
+    }
+
+    .btn-yes {
+      background: #48bb78;
+      color: white;
+      margin-right: 10px;
+    }
+
+    .btn-yes:hover {
+      background: #38a169;
+    }
+
+    .btn-no {
+      background: #fc8181;
+      color: white;
+    }
+
+    .btn-no:hover {
+      background: #f56565;
+    }
+
+    .btn-option {
+      background: #667eea;
+      color: white;
+      margin: 5px;
+    }
+
+    .btn-option:hover {
+      background: #5a67d8;
+    }
+
+    #messages {
+      margin-top: 20px;
+    }
+
+    .message {
+      background: white;
+      padding: 16px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      margin-bottom: 12px;
+      border-left: 4px solid #4299e1;
+    }
+
+    .message.decision {
+      border-left-color: #9f7aea;
+    }
+
+    .message.decision-required {
+      border-left-color: #ed8936;
+    }
+
+    .message.error {
+      border-left-color: #fc8181;
+      background: #fff5f5;
+    }
+
+    .message.success {
+      border-left-color: #48bb78;
+    }
+
+    .message-type {
+      font-size: 12px;
+      text-transform: uppercase;
+      color: #718096;
+      margin-bottom: 8px;
+    }
+
+    .message-content {
+      margin-bottom: 12px;
+    }
+
+    .message-question {
+      font-weight: 500;
+      color: #2d3748;
+      margin-bottom: 12px;
+    }
+
+    .options-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #e2e8f0;
+      border-top-color: #4299e1;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .status {
+      padding: 8px 12px;
+      background: #edf2f7;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #4a5568;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>CatalogChat</h1>
+
+  <div class="form-section">
+    <form id="startForm">
+      <div class="form-group">
+        <label for="rootUrl">Root URL <span style="color: #e53e3e;">*</span></label>
+        <input type="text" id="rootUrl" name="rootUrl" placeholder="https://example.com/page" required>
+      </div>
+
+      <div class="form-group">
+        <label for="model">Model</label>
+        <select id="model" name="model">
+          <option value="gpt-4o-mini" selected>gpt-4o-mini</option>
+          <option value="gpt-4o">gpt-4o</option>
+          <option value="gpt-4-turbo">gpt-4-turbo</option>
+          <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+        </select>
+      </div>
+
+      <button type="submit" class="btn-primary" id="submitBtn">
+        Start Workflow
+      </button>
+    </form>
+
+    <div id="status" class="status hidden"></div>
+  </div>
+
+  <div id="messages"></div>
+
+  <script>
+    const API_BASE = 'http://localhost:5678';
+    const WEBHOOK_START = `${API_BASE}/webhook-test/catalogchat/start`;
+
+    const startForm = document.getElementById('startForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const statusDiv = document.getElementById('status');
+    const messagesDiv = document.getElementById('messages');
+
+    let isProcessing = false;
+
+    function showStatus(text, showSpinner = false) {
+      statusDiv.innerHTML = text + (showSpinner ? '<span class="spinner"></span>' : '');
+      statusDiv.classList.remove('hidden');
+    }
+
+    function hideStatus() {
+      statusDiv.classList.add('hidden');
+    }
+
+    function addMessage(data, type = 'info') {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `message ${type}`;
+
+      if (data.type === 'decision_required') {
+        messageDiv.innerHTML = renderDecisionRequired(data);
+        attachDecisionHandlers(messageDiv, data);
+      } else if (data.type === 'decision') {
+        messageDiv.innerHTML = renderDecision(data);
+      } else {
+        messageDiv.innerHTML = `
+          <div class="message-type">${type}</div>
+          <div class="message-content">${JSON.stringify(data, null, 2)}</div>
+        `;
+      }
+
+      messagesDiv.appendChild(messageDiv);
+      messageDiv.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function renderDecisionRequired(data) {
+      let optionsHtml = '';
+
+      if (data.subtype === 'yn') {
+        // Yes/No style buttons
+        const yesOption = data.options?.[0] || 'yes';
+        const noOption = data.options?.[1] || 'no';
+        optionsHtml = `
+          <button class="btn-yes" data-action="${yesOption}">${capitalize(yesOption)}</button>
+          <button class="btn-no" data-action="${noOption}">${capitalize(noOption)}</button>
+        `;
+      } else {
+        // Multiple options
+        optionsHtml = (data.options || []).map(opt =>
+          `<button class="btn-option" data-action="${opt}">${capitalize(opt)}</button>`
+        ).join('');
+      }
+
+      return `
+        <div class="message-type">Decision Required</div>
+        <div class="message-question">${data.question || 'Please make a selection:'}</div>
+        <div class="options-container" data-id="${data.id}" data-resume-url="${data.resume_url}">
+          ${optionsHtml}
+        </div>
+      `;
+    }
+
+    function renderDecision(data) {
+      return `
+        <div class="message-type">Decision</div>
+        <div class="message-content">
+          <strong>Step:</strong> ${data.step || data.id || 'N/A'}<br>
+          <strong>URL:</strong> ${data.url || 'N/A'}
+        </div>
+      `;
+    }
+
+    function capitalize(str) {
+      return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
+    function attachDecisionHandlers(messageDiv, data) {
+      const buttons = messageDiv.querySelectorAll('button');
+      buttons.forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const action = e.target.dataset.action;
+          const resumeUrl = data.resume_url;
+          const decisionId = data.id;
+
+          // Disable all buttons in this message
+          buttons.forEach(b => b.disabled = true);
+
+          try {
+            await sendDecision(resumeUrl, decisionId, action);
+            e.target.style.background = '#48bb78';
+            e.target.textContent += ' ✓';
+          } catch (err) {
+            addMessage({ error: err.message }, 'error');
+            buttons.forEach(b => b.disabled = false);
+          }
+        });
+      });
+    }
+
+    async function sendDecision(resumeUrl, decisionId, action) {
+      showStatus('Sending decision...', true);
+
+      const response = await fetch(resumeUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          decision: {
+            id: decisionId,
+            action: action
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      hideStatus();
+
+      // Handle the response
+      handleResponse(data);
+
+      return data;
+    }
+
+    function handleResponse(data) {
+      if (!data) return;
+
+      if (Array.isArray(data)) {
+        data.forEach(item => handleResponse(item));
+        return;
+      }
+
+      if (data.type === 'decision_required') {
+        addMessage(data, 'decision-required');
+      } else if (data.type === 'decision') {
+        addMessage(data, 'decision');
+      } else if (data.error) {
+        addMessage(data, 'error');
+      } else {
+        addMessage(data, 'success');
+      }
+    }
+
+    startForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      if (isProcessing) return;
+
+      const rootUrl = document.getElementById('rootUrl').value.trim();
+      const model = document.getElementById('model').value;
+
+      if (!rootUrl) {
+        alert('Please enter a root URL');
+        return;
+      }
+
+      isProcessing = true;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Starting...';
+      showStatus('Initiating workflow...', true);
+      messagesDiv.innerHTML = '';
+
+      try {
+        const response = await fetch(WEBHOOK_START, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            url: rootUrl,
+            model: model,
+            mode: 'auto'
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        hideStatus();
+        handleResponse(data);
+
+      } catch (err) {
+        hideStatus();
+        addMessage({ error: `Failed to start workflow: ${err.message}` }, 'error');
+      } finally {
+        isProcessing = false;
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Start Workflow';
+      }
+    });
+  </script>
+</body>
+</html>

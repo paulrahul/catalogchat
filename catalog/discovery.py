@@ -17,6 +17,8 @@ from catalog.types import (
     DiscoveryState,
     Decision,
     DecisionType,
+    DecisionId,
+    DecisionStep,
     Field,
     LevelSchema,
 )
@@ -177,7 +179,9 @@ def _handle_manual_mode(
     """Handle manual mode - ask user what to do."""
     # Ask user if this is the final level or if they want to drill deeper
     decision = Decision(
+        id=DecisionId.SELECT_LINK,
         type=DecisionType.SELECT_LINK,
+        step=DecisionStep.DISCOVERY,
         prompt="Is this the final detail level, or should we drill deeper?",
         options=["final", "drill"],
         context={
@@ -244,7 +248,9 @@ def _handle_auto_mode(
 
     # Create decision for user confirmation
     decision = Decision(
+        id=DecisionId.CONFIRM_DRILLING,
         type=DecisionType.CONFIRM_DRILLING,
+        step=DecisionStep.NESTING_ANALYSIS,
         prompt="The AI recommends drilling deeper. Do you want to continue?",
         options=["continue", "final", "stop"],
         context={

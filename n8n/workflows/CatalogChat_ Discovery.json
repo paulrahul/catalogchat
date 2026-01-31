@@ -1,0 +1,328 @@
+{
+  "name": "CatalogChat: Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "catalogchat/start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1680,
+        -544
+      ],
+      "id": "b572e9bb-7b3b-44b2-8169-1d1005c511ae",
+      "name": "Webhook",
+      "webhookId": "d0ac569d-973a-45e1-86be-90a8fd2d27ba",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8080/plan/discovery",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $('Webhook').item.json.body.url }}"
+            },
+            {
+              "name": "mode",
+              "value": "={{ $json.body.mode }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -416,
+        -192
+      ],
+      "id": "54f79843-9c15-4551-be7c-57914507231c",
+      "name": "Start URL discovery"
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:8080/plan",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.body.url }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -1440,
+        -544
+      ],
+      "id": "f4b1e196-bae0-445b-b7bb-6e5b67af5473",
+      "name": "Fetch URL plan"
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -768,
+        -800
+      ],
+      "id": "12c1746b-bf4d-4529-bbc3-58b7f066d79d",
+      "name": "Wait",
+      "webhookId": "f0254d49-1b77-4291-a24d-92307c80c9d4"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "700d787d-3a08-4881-b5b6-79aa116b1ab3",
+              "leftValue": "={{ $json.plan !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1232,
+        -544
+      ],
+      "id": "af61bc09-7990-4694-8608-37e486659bcf",
+      "name": "Does URL plan already exist?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "74139491-972d-4ed2-8990-8abc84ded5c5",
+              "leftValue": "={{ $json.body.decision.action === 'yes'}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -592,
+        -656
+      ],
+      "id": "66034147-541e-4906-a4bb-6e89c7ff5be7",
+      "name": "If reuse"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"type\": \"decision\",\n  \"id\": \"next_step\",\n  \"step\": \"scrape\"\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -352,
+        -672
+      ],
+      "id": "c992f624-2011-4de9-9aba-28f5a16263df",
+      "name": "Scrape"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b35e8917-b410-47d4-ac4b-dbd81479ed0f",
+              "leftValue": "",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        64,
+        -192
+      ],
+      "id": "6caec3e4-42a1-4f4e-bbd7-1dccf1529ab9",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "= { \"type\":\"decision_required\", \"subtype\": \"yn\", \"id\":\"reuse_existing_plan\", \"question\": \"An existing plan was found for this URL. Do you want to reuse it?\", \"url\": \"{{$json.url}}\", \"plan_summary\": \"{{$json.plan}}\", \"resume_url\": \"{{$execution.resumeUrl}}\" }",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -976,
+        -624
+      ],
+      "id": "bbdf254a-bf1c-48d1-ad59-cd55e3d83052",
+      "name": "Ask user if plan should be reused"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Fetch URL plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start URL discovery": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch URL plan": {
+      "main": [
+        [
+          {
+            "node": "Does URL plan already exist?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "If reuse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Does URL plan already exist?": {
+      "main": [
+        [
+          {
+            "node": "Ask user if plan should be reused",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Start URL discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If reuse": {
+      "main": [
+        [
+          {
+            "node": "Scrape",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Start URL discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask user if plan should be reused": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "5a3c13c3-1e74-4a24-b3e9-99ef79961bb7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "686dc357b66680024b550737da7203908475780e37c8d7bf49ff871b9fae6b99"
+  },
+  "id": "__zfsTnc0fsbupnOJquWy",
+  "tags": []
+}

@@ -99,4 +99,5 @@ def get_result_path(url: str, results_dir: str = "results") -> str:
     import re
 
     safe_filename = re.sub(r"[^\w\-.]", "_", url)[:100]
-    return f"{results_dir}/{safe_filename}.json"
+    file_name = f"{results_dir}/{safe_filename}.json"
+    return file_name

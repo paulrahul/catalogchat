@@ -8,7 +8,7 @@ No I/O to console - all functions work with data in/data out.
 import json
 import os
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse, parse_qsl, urlencode
 
 import requests
 from openai import OpenAI
@@ -147,6 +147,58 @@ def call_llm(
 # -------------------------
 # URL Helper Functions
 # -------------------------
+
+
+def normalize_url(url: str) -> str:
+    """
+    Normalize a URL for consistent identification.
+
+    Normalizations applied:
+    - Upgrade http to https
+    - Remove trailing slash from path
+    - Remove fragment (#...)
+    - Sort query parameters alphabetically
+    - Lowercase scheme and host
+
+    Args:
+        url: The URL to normalize
+
+    Returns:
+        Normalized URL string
+    """
+    parsed = urlparse(url)
+
+    # Upgrade http to https
+    scheme = "https" if parsed.scheme in ("http", "https") else parsed.scheme
+
+    # Lowercase the host
+    netloc = parsed.netloc.lower()
+
+    # Remove trailing slash from path (but keep "/" for root)
+    path = parsed.path.rstrip("/") or "/"
+
+    # Sort query parameters
+    query_params = parse_qsl(parsed.query)
+    sorted_query = urlencode(sorted(query_params)) if query_params else ""
+
+    # Reconstruct without fragment
+    normalized = urlunparse((scheme, netloc, path, "", sorted_query, ""))
+
+    return normalized
+
+
+def url_to_hash(url: str) -> str:
+    """
+    Convert a URL to a short hash for use as a file key.
+
+    Args:
+        url: The URL (should be normalized first)
+
+    Returns:
+        12-character hex hash
+    """
+    import hashlib
+    return hashlib.md5(url.encode()).hexdigest()[:12]
 
 
 def resolve_url(base_url: str, link: str) -> str:
