@@ -72,11 +72,6 @@ class SchemaEditRequest(BaseModel):
     edits: list[dict]
 
 
-class DiscoveryAdvanceRequest(BaseModel):
-    url: str
-    user_input: dict | None = None
-
-
 class DiscoveryResponse(BaseModel):
     url: str
     state: dict
@@ -335,120 +330,75 @@ def update_plan(request: SchemaEditRequest):
 
 
 # -------------------------
-# Discovery Endpoints
+# Discovery Endpoint
 # -------------------------
 
 
-class DiscoveryStartRequest(BaseModel):
-    """Request to start discovery for a URL."""
+class DiscoveryRequest(BaseModel):
+    """Request to run discovery for a URL."""
     url: str
+    user_input: dict | None = None  # For responding to decisions
     mode: Literal["auto", "interactive"] = "auto"
-    force_new: bool = False  # If True, ignore existing plan and start fresh
 
 
 @app.post("/plan/discovery", response_model=DiscoveryResponse)
-def start_discovery_endpoint(request: DiscoveryStartRequest):
+def discovery_endpoint(request: DiscoveryRequest):
     """
-    Start discovery for a URL.
+    Run discovery for a URL.
 
-    This initializes the discovery state machine. Call /plan/discovery/advance
-    or POST /wait_response to drive discovery forward.
+    This is a unified endpoint that handles both starting and advancing discovery:
+    - If no active discovery exists for this URL, starts a new one
+    - If active discovery exists, advances it with the provided user_input
 
-    If a completed plan already exists for this URL and force_new is False,
-    returns a decision asking whether to reuse the existing plan or start fresh.
-    """
-    from catalog.types import Decision, DecisionType
+    Use GET /plan to check for existing completed plans before calling this.
 
-    normalized = normalize_url(request.url)
-    state_key = _get_state_key(request.url)
-
-    # Check for existing completed plan
-    _, existing_plan = _load_plan_by_url(request.url)
-
-    # If plan exists with schema_chain (completed discovery) and not forcing new
-    if existing_plan and existing_plan.schema_chain and not request.force_new:
-        # Create a decision asking if user wants to reuse
-        reuse_decision = Decision(
-            id=DecisionId.REUSE_EXISTING_PLAN,
-            type=DecisionType.CONFIRM_DRILLING,  # Using closest type for compatibility
-            step=DecisionStep.PLAN_CHECK,
-            prompt="A completed plan already exists for this URL. Do you want to reuse it or start fresh?",
-            options=["reuse", "discard"],
-            context={
-                "existing_plan_id": existing_plan.id,
-                "existing_plan_fields": len(existing_plan.fields),
-                "existing_plan_levels": existing_plan.nesting_depth,
-                "existing_plan_item_name": existing_plan.item_name,
-            },
-        )
-
-        # Store a temporary state to track this decision
-        # We'll use a special marker in the state
-        temp_state = DiscoveryState(
-            plan=existing_plan,
-            current_url=normalized,
-            done=False,
-            pending_decision=reuse_decision,
-        )
-        _discovery_states[state_key] = temp_state
-
-        return DiscoveryResponse(
-            url=request.url,
-            state=_serialize_discovery_state(temp_state),
-            decision=reuse_decision.to_dict(),
-            done=False,
-            plan=None,
-        )
-
-    # Create new plan or use existing incomplete one
-    if existing_plan and not existing_plan.schema_chain:
-        plan = existing_plan
-    else:
-        plan = create_plan(normalized)
-
-    # Start discovery
-    state = start_discovery(plan, mode=request.mode)
-
-    # Store state in memory
-    _discovery_states[state_key] = state
-
-    return DiscoveryResponse(
-        url=request.url,
-        state=_serialize_discovery_state(state),
-        decision=None,
-        done=state.done,
-        plan=None,
-    )
-
-
-@app.post("/plan/discovery/advance", response_model=DiscoveryResponse)
-def advance_discovery_endpoint(request: DiscoveryAdvanceRequest):
-    """
-    Advance discovery by one step.
-
-    If a decision was returned in the previous response, pass the user's
-    choice in user_input. For example:
+    User input examples (when responding to decisions):
     - {"choice": "continue"} - continue drilling deeper
     - {"choice": "final"} - mark current level as final
     - {"choice": "drill", "link_index": 0} - select specific link to follow
 
     When done=true, the completed plan is returned.
     """
+    normalized = normalize_url(request.url)
     state_key = _get_state_key(request.url)
 
-    # Get discovery state
+    # Check for active discovery state
     state = _discovery_states.get(state_key)
+
     if not state:
-        raise HTTPException(
-            status_code=400,
-            detail="No active discovery for this URL. Call POST /plan/discovery first.",
+        # No active discovery - start a new one
+        plan = create_plan(normalized)
+        state = start_discovery(plan, mode=request.mode)
+        _discovery_states[state_key] = state
+
+        # Auto-advance to get the first decision
+        state, decision = advance_discovery(
+            state=state,
+            user_input=None,
+            mode=request.mode,
+        )
+        _discovery_states[state_key] = state
+
+        # Check if already done (unlikely but possible for trivial cases)
+        completed_plan = None
+        if state.done:
+            _save_plan_by_url(request.url, state.plan)
+            completed_plan = state.plan.to_dict()
+            del _discovery_states[state_key]
+
+        return DiscoveryResponse(
+            url=request.url,
+            state=_serialize_discovery_state(state),
+            decision=decision.to_dict() if decision else None,
+            done=state.done,
+            plan=completed_plan,
         )
 
-    # Advance discovery
+    # Active discovery exists - advance it
     state, decision = advance_discovery(
         state=state,
         user_input=request.user_input,
-        mode="auto",
+        mode=request.mode,
     )
 
     # Update stored state
@@ -755,7 +705,7 @@ def get_pending_decision(url: str):
         url=url,
         success=True,
         state=_serialize_discovery_state(state),
-        message="Discovery in progress. Call POST /plan/discovery/advance or POST /wait_response to continue.",
+        message="Discovery in progress. Call POST /plan/discovery to continue.",
     )
 
 
@@ -770,6 +720,7 @@ def wait_response_endpoint(request: WaitResponseRequest):
     Supported decision IDs:
     - confirm_drilling: Continue/stop drilling during discovery
     - select_link: Select which link to follow during discovery
+    - confirm_final_level: Confirm current level is final
     - fix_field: Fix field selectors after sample analysis
     - edit_schema: Apply schema edits
     - scrape_more: Continue scraping more data
@@ -782,7 +733,6 @@ def wait_response_endpoint(request: WaitResponseRequest):
 
     # Route to appropriate handler based on decision ID
     handlers = {
-        DecisionId.REUSE_EXISTING_PLAN: _handle_reuse_plan_response,
         DecisionId.CONFIRM_DRILLING: _handle_drilling_response,
         DecisionId.SELECT_LINK: _handle_link_selection_response,
         DecisionId.CONFIRM_FINAL_LEVEL: _handle_final_level_response,
@@ -806,54 +756,6 @@ def wait_response_endpoint(request: WaitResponseRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Error processing response: {str(e)}",
-        )
-
-
-def _handle_reuse_plan_response(
-    url: str, action: str, payload: dict, meta: WaitResponseMeta | None
-) -> WaitResponseResult:
-    """Handle response to REUSE_EXISTING_PLAN decision."""
-    state_key = _get_state_key(url)
-    state = _discovery_states.get(state_key)
-
-    if action == "reuse":
-        # User wants to reuse the existing plan
-        if state and state.plan:
-            plan = state.plan
-            # Clean up discovery state since we're reusing
-            del _discovery_states[state_key]
-
-            return WaitResponseResult(
-                url=url,
-                success=True,
-                plan=plan.to_dict(),
-                message="Reusing existing plan",
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="No existing plan found to reuse",
-            )
-
-    elif action == "discard":
-        # User wants to start fresh - create new plan and start discovery
-        normalized = normalize_url(url)
-        plan = create_plan(normalized)
-        new_state = start_discovery(plan, mode="auto")
-
-        _discovery_states[state_key] = new_state
-
-        return WaitResponseResult(
-            url=url,
-            success=True,
-            state=_serialize_discovery_state(new_state),
-            message="Starting fresh discovery",
-        )
-
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid action for reuse_existing_plan: {action}. Expected 'reuse' or 'discard'.",
         )
 
 
@@ -963,8 +865,46 @@ def _handle_final_level_response(
     url: str, action: str, payload: dict, meta: WaitResponseMeta | None
 ) -> WaitResponseResult:
     """Handle response to CONFIRM_FINAL_LEVEL decision."""
-    # This is similar to drilling response but specifically for final level confirmation
-    return _handle_drilling_response(url, action, payload, meta)
+    state_key = _get_state_key(url)
+    state = _discovery_states.get(state_key)
+
+    if not state:
+        raise HTTPException(
+            status_code=400,
+            detail="No active discovery for this URL. Start discovery first.",
+        )
+
+    # Map action to user_input format expected by advance_discovery
+    user_input = {"choice": action}
+
+    # If payload contains link_index (for drill action), include it
+    if "link_index" in payload:
+        user_input["link_index"] = payload["link_index"]
+
+    # Advance discovery with user input
+    state, next_decision = advance_discovery(
+        state=state,
+        user_input=user_input,
+        mode="auto",
+    )
+
+    _discovery_states[state_key] = state
+
+    # Check if done
+    completed_plan = None
+    if state.done:
+        _save_plan_by_url(url, state.plan)
+        completed_plan = state.plan.to_dict()
+        del _discovery_states[state_key]
+
+    return WaitResponseResult(
+        url=url,
+        success=True,
+        next_decision=next_decision.to_dict() if next_decision else None,
+        state=_serialize_discovery_state(state),
+        plan=completed_plan,
+        message="Final level confirmed" if state.done else "Drilling deeper",
+    )
 
 
 def _handle_fix_field_response(

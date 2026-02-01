@@ -220,28 +220,66 @@ def _handle_auto_mode(
         if reasoning:
             on_progress("Reason", reasoning)
 
+    # Store nesting result in schema for later use
+    if state._current_schema:
+        state._current_schema["nesting_analysis"] = nesting_result
+
     if is_final:
-        # LLM says this is final - just proceed
-        return _add_level_and_finalize(state, on_progress), None
+        # LLM says this is final - ask user to confirm
+        decision = Decision(
+            id=DecisionId.CONFIRM_FINAL_LEVEL,
+            type=DecisionType.CONFIRM_FINAL_LEVEL,
+            step=DecisionStep.NESTING_ANALYSIS,
+            prompt="The AI determined this is the final detail level. Confirm to complete discovery, or choose to drill deeper.",
+            options=["confirm", "drill"],
+            context={
+                "current_url": state.current_url,
+                "current_level": state.current_level,
+                "reasoning": nesting_result.get("reasoning"),
+                "available_links": state._unvisited_links[:10],
+                "schema_summary": {
+                    "catalog_type": state._current_schema.get("catalog_type") if state._current_schema else None,
+                    "item_name": state._current_schema.get("item_schema", {}).get("item_name") if state._current_schema else None,
+                    "field_count": len(state._current_schema.get("item_schema", {}).get("fields", [])) if state._current_schema else 0,
+                },
+            },
+        )
+        state.pending_decision = decision
+        return state, decision
 
     # LLM recommends drilling - ask user to confirm
     link_index = nesting_result.get("recommended_link_index")
-    if link_index is None:
-        return _add_level_and_finalize(state, on_progress), None
+    recommended_url = None
 
-    try:
-        link_index = int(link_index)
-    except (TypeError, ValueError):
-        if on_progress:
-            on_progress("Warning", f"Invalid link index: {link_index}")
-        return _add_level_and_finalize(state, on_progress), None
+    if link_index is not None:
+        try:
+            link_index = int(link_index)
+            if 0 <= link_index < len(state._unvisited_links):
+                recommended_url = state._unvisited_links[link_index]
+        except (TypeError, ValueError):
+            if on_progress:
+                on_progress("Warning", f"Invalid link index: {link_index}")
 
-    if link_index < 0 or link_index >= len(state._unvisited_links):
-        if on_progress:
-            on_progress("Warning", f"Link index {link_index} out of range")
-        return _add_level_and_finalize(state, on_progress), None
+    if not recommended_url and state._unvisited_links:
+        # Fall back to first available link
+        recommended_url = state._unvisited_links[0]
 
-    recommended_url = state._unvisited_links[link_index]
+    if not recommended_url:
+        # No links to drill - finalize with confirmation
+        decision = Decision(
+            id=DecisionId.CONFIRM_FINAL_LEVEL,
+            type=DecisionType.CONFIRM_FINAL_LEVEL,
+            step=DecisionStep.NESTING_ANALYSIS,
+            prompt="No more links to explore. Confirm to complete discovery.",
+            options=["confirm"],
+            context={
+                "current_url": state.current_url,
+                "current_level": state.current_level,
+                "reasoning": "No unvisited links available for drilling",
+            },
+        )
+        state.pending_decision = decision
+        return state, decision
 
     if on_progress:
         on_progress("Recommended drill URL", recommended_url)
@@ -252,7 +290,7 @@ def _handle_auto_mode(
         type=DecisionType.CONFIRM_DRILLING,
         step=DecisionStep.NESTING_ANALYSIS,
         prompt="The AI recommends drilling deeper. Do you want to continue?",
-        options=["continue", "final", "stop"],
+        options=["continue", "final"],
         context={
             "current_url": state.current_url,
             "recommended_url": recommended_url,
@@ -261,9 +299,6 @@ def _handle_auto_mode(
             "link_reason": nesting_result.get("recommended_link_reason"),
         },
     )
-
-    # Store nesting result in state for later use
-    state._current_schema["nesting_analysis"] = nesting_result
 
     state.pending_decision = decision
     return state, decision
@@ -305,6 +340,40 @@ def _handle_user_input(
                 state = _add_level_to_chain(state, on_progress)
                 # Move to next level
                 state.current_url = recommended_url
+                state.current_level += 1
+                # Reset page state
+                state._current_html = None
+                state._current_dom_summary = None
+                state._current_schema = None
+                state._unvisited_links = []
+            return state
+
+    elif decision.type == DecisionType.CONFIRM_FINAL_LEVEL:
+        choice = user_input.get("choice", "confirm")
+
+        if choice == "confirm":
+            # User confirms this is final level
+            if on_progress:
+                on_progress("Confirmed final level", state.current_url)
+            # Re-analyze as detail page if needed
+            if not state._current_schema or not state._current_schema.get("item_schema", {}).get("fields"):
+                state._current_schema = infer_schema(
+                    state.current_url,
+                    state._current_dom_summary,
+                    on_progress,
+                    is_final_level=True,
+                )
+            return _add_level_and_mark_done(state, on_progress)
+
+        elif choice == "drill":
+            # User wants to drill despite AI recommendation
+            selected_index = user_input.get("link_index", 0)
+            if 0 <= selected_index < len(state._unvisited_links):
+                selected_url = state._unvisited_links[selected_index]
+                # Add current level to chain
+                state = _add_level_to_chain(state, on_progress)
+                # Move to next level
+                state.current_url = selected_url
                 state.current_level += 1
                 # Reset page state
                 state._current_html = None
@@ -397,6 +466,7 @@ def _add_level_and_mark_done(
 def _finalize_discovery(state: DiscoveryState, on_progress=None) -> DiscoveryState:
     """Finalize discovery and merge schemas."""
     state.done = True
+    state.pending_decision = None  # Clear any pending decision
     return _update_plan_from_chain(state, on_progress)
 
 

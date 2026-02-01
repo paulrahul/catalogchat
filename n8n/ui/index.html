@@ -190,6 +190,32 @@
       color: #4a5568;
       margin-top: 12px;
     }
+
+    .additional-context {
+      background: #f7fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 12px;
+      margin: 12px 0;
+      font-size: 13px;
+      color: #4a5568;
+    }
+
+    .additional-context-title {
+      font-weight: 600;
+      color: #2d3748;
+      margin-bottom: 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .additional-context pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
@@ -224,7 +250,16 @@
 
   <script>
     const API_BASE = 'http://localhost:5678';
-    const WEBHOOK_START = `${API_BASE}/webhook-test/catalogchat/start`;
+    const WEBHOOK_START = `${API_BASE}/webhook/catalogchat/start`;
+
+    // Extensible workflow endpoints configuration
+    // Add new step-based workflows here
+    const WORKFLOW_ENDPOINTS = {
+      discover: `${API_BASE}/webhook/catalogchat/discover/start`
+      // Add more workflows as needed:
+      // extract: `${API_BASE}/webhook-test/catalogchat/extract/start`,
+      // transform: `${API_BASE}/webhook-test/catalogchat/transform/start`,
+    };
 
     const startForm = document.getElementById('startForm');
     const submitBtn = document.getElementById('submitBtn');
@@ -232,6 +267,7 @@
     const messagesDiv = document.getElementById('messages');
 
     let isProcessing = false;
+    let currentUrl = ''; // Store the URL for workflow calls
 
     function showStatus(text, showSpinner = false) {
       statusDiv.innerHTML = text + (showSpinner ? '<span class="spinner"></span>' : '');
@@ -252,9 +288,24 @@
       } else if (data.type === 'decision') {
         messageDiv.innerHTML = renderDecision(data);
       } else {
+        // Render additional_context if present in generic messages
+        let additionalContextHtml = '';
+        if (data.additional_context) {
+          const contextContent = typeof data.additional_context === 'string'
+            ? data.additional_context
+            : JSON.stringify(data.additional_context, null, 2);
+          additionalContextHtml = `
+            <div class="additional-context">
+              <div class="additional-context-title">Additional Context</div>
+              <pre>${escapeHtml(contextContent)}</pre>
+            </div>
+          `;
+        }
+
         messageDiv.innerHTML = `
           <div class="message-type">${type}</div>
-          <div class="message-content">${JSON.stringify(data, null, 2)}</div>
+          <div class="message-content"><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></div>
+          ${additionalContextHtml}
         `;
       }
 
@@ -280,27 +331,106 @@
         ).join('');
       }
 
+      // Render additional_context if present
+      let additionalContextHtml = '';
+      if (data.additional_context) {
+        const contextContent = typeof data.additional_context === 'string'
+          ? data.additional_context
+          : JSON.stringify(data.additional_context, null, 2);
+        additionalContextHtml = `
+          <div class="additional-context">
+            <div class="additional-context-title">Additional Context</div>
+            <pre>${escapeHtml(contextContent)}</pre>
+          </div>
+        `;
+      }
+
       return `
         <div class="message-type">Decision Required</div>
         <div class="message-question">${data.question || 'Please make a selection:'}</div>
-        <div class="options-container" data-id="${data.id}" data-resume-url="${data.resume_url}">
+        ${additionalContextHtml}
+        <div class="options-container" data-id="${data.id}" data-resume-url="${data.resume_url}" data-question-id="${data.question_id || ''}">
           ${optionsHtml}
         </div>
       `;
     }
 
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     function renderDecision(data) {
+      // Render additional_context if present
+      let additionalContextHtml = '';
+      if (data.additional_context) {
+        const contextContent = typeof data.additional_context === 'string'
+          ? data.additional_context
+          : JSON.stringify(data.additional_context, null, 2);
+        additionalContextHtml = `
+          <div class="additional-context">
+            <div class="additional-context-title">Additional Context</div>
+            <pre>${escapeHtml(contextContent)}</pre>
+          </div>
+        `;
+      }
+
       return `
         <div class="message-type">Decision</div>
         <div class="message-content">
           <strong>Step:</strong> ${data.step || data.id || 'N/A'}<br>
           <strong>URL:</strong> ${data.url || 'N/A'}
         </div>
+        ${additionalContextHtml}
       `;
     }
 
     function capitalize(str) {
       return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
+    function toSentenceCase(str) {
+      // Convert step name to sentence case (e.g., "discover" -> "Discover", "extract_data" -> "Extract Data")
+      return str
+        .split(/[_-]/)
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+    }
+
+    async function callWorkflow(step, payload) {
+      const endpoint = WORKFLOW_ENDPOINTS[step];
+      if (!endpoint) {
+        console.warn(`No workflow endpoint configured for step: ${step}`);
+        return null;
+      }
+
+      const stepName = toSentenceCase(step);
+      showStatus(`Started ${stepName} workflow`, true);
+
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        hideStatus();
+        handleResponse(data);
+        return data;
+
+      } catch (err) {
+        hideStatus();
+        addMessage({ error: `Failed to call ${stepName} workflow: ${err.message}` }, 'error');
+        return null;
+      }
     }
 
     function attachDecisionHandlers(messageDiv, data) {
@@ -310,12 +440,13 @@
           const action = e.target.dataset.action;
           const resumeUrl = data.resume_url;
           const decisionId = data.id;
+          const questionId = data.question_id;
 
           // Disable all buttons in this message
           buttons.forEach(b => b.disabled = true);
 
           try {
-            await sendDecision(resumeUrl, decisionId, action);
+            await sendDecision(resumeUrl, decisionId, action, questionId);
             e.target.style.background = '#48bb78';
             e.target.textContent += ' ✓';
           } catch (err) {
@@ -326,20 +457,27 @@
       });
     }
 
-    async function sendDecision(resumeUrl, decisionId, action) {
+    async function sendDecision(resumeUrl, decisionId, action, questionId) {
       showStatus('Sending decision...', true);
+
+      const body = {
+        decision: {
+          id: decisionId,
+          action: action
+        }
+      };
+
+      // Include question_id if present
+      if (questionId) {
+        body.question_id = questionId;
+      }
 
       const response = await fetch(resumeUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          decision: {
-            id: decisionId,
-            action: action
-          }
-        })
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
@@ -367,6 +505,12 @@
         addMessage(data, 'decision-required');
       } else if (data.type === 'decision') {
         addMessage(data, 'decision');
+
+        // Check if this decision has a step that maps to a workflow
+        if (data.step && WORKFLOW_ENDPOINTS[data.step]) {
+          // Call the corresponding workflow with the URL
+          callWorkflow(data.step, { url: currentUrl});
+        }
       } else if (data.error) {
         addMessage(data, 'error');
       } else {
@@ -386,6 +530,9 @@
         alert('Please enter a root URL');
         return;
       }
+
+      // Store the URL for use in subsequent workflow calls
+      currentUrl = rootUrl;
 
       isProcessing = true;
       submitBtn.disabled = true;
