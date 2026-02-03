@@ -11,8 +11,8 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
       "position": [
-        0,
-        0
+        -64,
+        -16
       ],
       "id": "a691e37e-6e01-49b7-ac29-703fe28b8364",
       "name": "Webhook",
@@ -28,6 +28,10 @@
             {
               "name": "url",
               "value": "={{ $json.body.url }}"
+            },
+            {
+              "name": "user_input",
+              "value": "={{ $json.body.user_input !== undefined ? $json.body.user_input : null }}"
             }
           ]
         },
@@ -36,8 +40,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        272,
-        0
+        144,
+        -16
       ],
       "id": "2bc7036e-7960-4c49-9df8-3fda994e6a47",
       "name": "Advance discovery"
@@ -52,27 +56,12 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        768,
-        0
+        800,
+        -32
       ],
       "id": "3f538136-2114-44e3-9d84-725c87f04d85",
       "name": "Wait",
       "webhookId": "06b43015-9c84-432f-9c2c-125e4145a538"
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={ \n\"type\": \"decision\", \n\"id\": \"plan\", \n\"additional_context\":  {{ JSON.stringify($('Advance discovery').item.json.state) }}\n}",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.5,
-      "position": [
-        1456,
-        160
-      ],
-      "id": "7cab70db-e7be-48d9-bbf6-09621f30f03a",
-      "name": "Respond with Plan"
     },
     {
       "parameters": {
@@ -86,7 +75,7 @@
           "conditions": [
             {
               "id": "3b47c450-effc-45e8-95d9-84a44ec7ede9",
-              "leftValue": "={{ $json.body.decision.action === 'continue'}}",
+              "leftValue": "={{ $json.body.decision.action === 'continue' || $json.body.decision.action === 'drill' }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -102,26 +91,11 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        976,
-        0
+        848,
+        -272
       ],
       "id": "7e83590a-2b63-4c63-bfc0-3048465933f5",
-      "name": "If user says No"
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={\n  \"type\": \"decision_required\", \n  \"id\": \"advance_discovery\",\n  \"question_id\": \"{{ $json.decision.id }}\",\n  \"question\": \"{{ $json.decision.prompt }}\",\n  \"options\": {{ JSON.stringify($json.decision.options) }},\n  \"url\": \"{{ $json.url }}\",\n  \"additional_context\": {{ JSON.stringify($json.decision.context) }},\n  \"resume_url\": \"{{ $execution.resumeUrl }}\"\n}",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.5,
-      "position": [
-        528,
-        0
-      ],
-      "id": "614ae6ac-62e6-480a-9101-78f988b23f64",
-      "name": "Continue?"
+      "name": "If yes"
     },
     {
       "parameters": {
@@ -134,56 +108,117 @@
           },
           "conditions": [
             {
-              "id": "32340beb-33de-4833-9192-cf89b56e8a0f",
-              "leftValue": "={{ $json.body.question_id === 'confirm_drilling'}}",
+              "id": "2dc4b76c-9455-49c7-9acc-3500bb4b7504",
+              "leftValue": "={{ $json.done }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
-                "operation": "true",
+                "operation": "false",
                 "singleValue": true
               }
             }
           ],
           "combinator": "and"
         },
-        "looseTypeValidation": "={{ false }}",
         "options": {}
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        1248,
-        -96
+        336,
+        -16
       ],
-      "id": "06a9a4bc-71f6-4767-94b3-d34dff01bc48",
-      "name": "If futher drilling?"
+      "id": "06b96bb3-d3d4-458d-9661-ce2880b8d2f8",
+      "name": "If discovery not complete"
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://127.0.0.1:5678/webhook/catalogchat/discover/start",
-        "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "url",
-              "value": "={{ $('Webhook').item.json.body.url }}"
-            }
-          ]
-        },
+        "respondWith": "json",
+        "responseBody": "={\n  \"type\": \"decision\",\n  \"id\": \"plan\",\n  \"additional_context\": {{ JSON.stringify($('Advance discovery').item.json.plan) }}\n}",
         "options": {}
       },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.3,
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
       "position": [
-        1456,
-        -192
+        688,
+        192
       ],
-      "id": "4f5c05ec-94e2-4623-b49f-571efc8fc764",
-      "name": "Call back this workflow"
+      "id": "7cab70db-e7be-48d9-bbf6-09621f30f03a",
+      "name": "Respond with final Plan"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"type\": \"decision\",\n  \"id\": \"incomplete_discovery\",\n  \"additional_context\": {{ $('Advance discovery').item.json.state }}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1200,
+        -256
+      ],
+      "id": "5d861d75-6f12-401b-a09e-7e899c247efb",
+      "name": "Respond with intermediate state"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"type\": \"decision_required\", \n  \"id\": \"advance_discovery\",\n  \"question_id\": \"{{ $json.decision.id }}\",\n  \"question\": \"{{ $json.decision.prompt }}\",\n  \"options\": {{ JSON.stringify($json.decision.options) }},\n  \"url\": \"{{ $json.url }}\",\n  \"additional_context\": {{ JSON.stringify($json.decision.context) }},\n  \"resume_url\": \"{{ $execution.resumeUrl }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        592,
+        -32
+      ],
+      "id": "614ae6ac-62e6-480a-9101-78f988b23f64",
+      "name": "Ask user for their choice"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"type\": \"decision\",\n  \"id\": \"next_step\",\n  \"step\": \"discover\",\n  \"user_input\": {\n    \"choice\": \"{{ $json.body.decision.action === 'confirm' ? 'final' : $json.body.decision.action }}\"\n  },\n  \"url\": \"{{ $('Advance discovery').item.json.decision.context.recommended_url }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1056,
+        -32
+      ],
+      "id": "c9e9e8ad-9e40-47af-853c-6edbd9c7d520",
+      "name": "Call back discover workflow with user choice"
     }
   ],
-  "pinData": {},
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "accept": "application/json,text/html,application/xhtml+xml,application/xml,text/*;q=0.9, image/*;q=0.8, */*;q=0.7",
+            "content-type": "application/json",
+            "user-agent": "axios/1.12.0",
+            "content-length": "48",
+            "accept-encoding": "gzip, compress, deflate, br",
+            "host": "127.0.0.1:5678",
+            "connection": "close"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "url": "https://www.criterion.com/closet-picks"
+          },
+          "webhookUrl": "http://localhost:5678/webhook/catalogchat/discover/start",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
   "connections": {
     "Webhook": {
       "main": [
@@ -200,7 +235,7 @@
       "main": [
         [
           {
-            "node": "Continue?",
+            "node": "If discovery not complete",
             "type": "main",
             "index": 0
           }
@@ -211,54 +246,48 @@
       "main": [
         [
           {
-            "node": "If user says No",
+            "node": "Call back discover workflow with user choice",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "If user says No": {
+    "If yes": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Respond with intermediate state",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If discovery not complete": {
       "main": [
         [
           {
-            "node": "If futher drilling?",
+            "node": "Ask user for their choice",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Respond with Plan",
+            "node": "Respond with final Plan",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Continue?": {
+    "Ask user for their choice": {
       "main": [
         [
           {
             "node": "Wait",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "If futher drilling?": {
-      "main": [
-        [
-          {
-            "node": "Call back this workflow",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Respond with Plan",
             "type": "main",
             "index": 0
           }
@@ -271,7 +300,7 @@
     "executionOrder": "v1",
     "availableInMCP": false
   },
-  "versionId": "4bf4dabc-2ab8-45d5-9982-300188a86198",
+  "versionId": "f961335e-f693-4afe-9a21-2863b828a418",
   "meta": {
     "instanceId": "686dc357b66680024b550737da7203908475780e37c8d7bf49ff871b9fae6b99"
   },
