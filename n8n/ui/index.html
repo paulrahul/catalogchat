@@ -509,7 +509,17 @@
         // Check if this decision has a step that maps to a workflow
         if (data.step && WORKFLOW_ENDPOINTS[data.step]) {
           // Call the corresponding workflow with the URL
-          callWorkflow(data.step, { url: currentUrl});
+          let payload = { url: currentUrl};
+
+          if (data.url) {
+            payload.url = data.url;
+          }
+
+          if (data.user_input) {
+            payload.user_input = data.user_input;
+          }
+
+          callWorkflow(data.step, payload);
         }
       } else if (data.error) {
         addMessage(data, 'error');

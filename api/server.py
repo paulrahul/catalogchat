@@ -394,7 +394,18 @@ def discovery_endpoint(request: DiscoveryRequest):
             plan=completed_plan,
         )
 
-    # Active discovery exists - advance it
+    # Active discovery exists
+    # If there's a pending decision and no user_input, return the pending decision (idempotent)
+    if state.pending_decision and not request.user_input:
+        return DiscoveryResponse(
+            url=request.url,
+            state=_serialize_discovery_state(state),
+            decision=state.pending_decision.to_dict(),
+            done=state.done,
+            plan=None,
+        )
+
+    # Advance discovery with user input
     state, decision = advance_discovery(
         state=state,
         user_input=request.user_input,

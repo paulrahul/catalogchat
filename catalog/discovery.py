@@ -87,11 +87,15 @@ def advance_discovery(
     if state.done:
         return state, None
 
-    # Handle pending decision if we have user input
-    if state.pending_decision and user_input:
-        state = _handle_user_input(state, user_input, on_progress)
-        # Always return after processing user input - let next call handle the new state
-        return state, None
+    # If there's a pending decision, we need user input to proceed
+    if state.pending_decision:
+        if user_input:
+            # Handle the user's response
+            state = _handle_user_input(state, user_input, on_progress)
+            # Continue processing after handling input (don't return early)
+        else:
+            # No user input provided - return the pending decision again (idempotent)
+            return state, state.pending_decision
 
     # Check depth limit
     if state.current_level > max_depth:
@@ -121,17 +125,6 @@ def advance_discovery(
             return _finalize_discovery(state, on_progress), None
 
         state._current_dom_summary = summarize_dom(state._current_html, on_progress=on_progress)
-
-    # Check if we're waiting for user to confirm this is final level
-    if state.pending_decision and state.pending_decision.type == DecisionType.CONFIRM_FINAL_LEVEL:
-        # User said this is final - reanalyze as detail page
-        state._current_schema = infer_schema(
-            state.current_url,
-            state._current_dom_summary,
-            on_progress,
-            is_final_level=True,
-        )
-        return _add_level_and_finalize(state, on_progress), None
 
     # Infer schema if we haven't
     if state._current_schema is None:
