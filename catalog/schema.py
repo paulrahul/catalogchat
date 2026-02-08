@@ -761,29 +761,76 @@ def apply_schema_edits(plan: CatalogPlan, edits: list[dict]) -> CatalogPlan:
         Updated CatalogPlan with edits applied
 
     Edit operations:
-        {"action": "rename", "field": "old_name", "new_name": "new_name"}
-        {"action": "delete", "field": "field_name"}
+        {"action": "rename", "field": "old_name", "new_name": "new_name", "level": 0}
+        {"action": "delete", "field": "field_name", "level": 0}
         {"action": "update", "field": "field_name", "type": "string", "required": True, ...}
         {"action": "add", "name": "field_name", "type": "string", ...}
+
+    When "level" is provided (schema_chain index), edits are applied to both
+    schema_chain[level].fields and the corresponding merged field in plan.fields.
     """
     # Work with a copy
     data = plan.to_dict()
     fields = data.get("fields", [])
+    schema_chain = data.get("schema_chain", [])
 
     for edit in edits:
         action = edit.get("action")
+        level = edit.get("level")  # schema_chain index (optional)
+
+        # Resolve the actual level number from schema_chain for matching
+        # against source_level_num in merged fields.
+        level_num = None
+        if level is not None and 0 <= level < len(schema_chain):
+            level_num = schema_chain[level].get("level", level + 1)
 
         if action == "rename":
             old_name = edit.get("field")
             new_name = edit.get("new_name")
-            for f in fields:
-                if f.get("name") == old_name:
-                    f["name"] = new_name
-                    break
+
+            # Update in schema_chain
+            if level is not None and 0 <= level < len(schema_chain):
+                for f in schema_chain[level].get("fields", []):
+                    if f.get("name") == old_name:
+                        f["name"] = new_name
+                        break
+
+            # Update in merged fields
+            if level_num is not None:
+                for f in fields:
+                    if f.get("original_name") == old_name and f.get("source_level_num") == level_num:
+                        f["original_name"] = new_name
+                        current_name = f.get("name", "")
+                        if current_name.endswith(f"_{old_name}"):
+                            prefix = current_name[: -len(old_name)]
+                            f["name"] = f"{prefix}{new_name}"
+                        else:
+                            f["name"] = new_name
+                        break
+            else:
+                for f in fields:
+                    if f.get("name") == old_name:
+                        f["name"] = new_name
+                        break
 
         elif action == "delete":
             field_name = edit.get("field")
-            fields = [f for f in fields if f.get("name") != field_name]
+
+            # Delete from schema_chain
+            if level is not None and 0 <= level < len(schema_chain):
+                level_fields = schema_chain[level].get("fields", [])
+                schema_chain[level]["fields"] = [
+                    f for f in level_fields if f.get("name") != field_name
+                ]
+
+            # Delete from merged fields
+            if level_num is not None:
+                fields = [
+                    f for f in fields
+                    if not (f.get("original_name") == field_name and f.get("source_level_num") == level_num)
+                ]
+            else:
+                fields = [f for f in fields if f.get("name") != field_name]
             data["fields"] = fields
 
         elif action == "update":
@@ -791,7 +838,7 @@ def apply_schema_edits(plan: CatalogPlan, edits: list[dict]) -> CatalogPlan:
             for f in fields:
                 if f.get("name") == field_name:
                     for key, value in edit.items():
-                        if key not in ("action", "field"):
+                        if key not in ("action", "field", "level"):
                             f[key] = value
                     break
 
@@ -808,6 +855,7 @@ def apply_schema_edits(plan: CatalogPlan, edits: list[dict]) -> CatalogPlan:
             fields.append(new_field)
 
     data["fields"] = fields
+    data["schema_chain"] = schema_chain
     return CatalogPlan.from_dict(data)
 
 

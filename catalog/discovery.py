@@ -22,6 +22,9 @@ from catalog.types import (
     Field,
     LevelSchema,
 )
+from bs4 import BeautifulSoup
+
+from catalog.extraction import _extract_field_value
 from catalog.schema import summarize_dom, infer_schema, analyze_nesting, merge_schemas
 from catalog.util import fetch_html, get_resolved_links
 from catalog.plan import create_plan
@@ -418,6 +421,27 @@ def _add_level_to_chain(state: DiscoveryState, on_progress=None) -> DiscoverySta
         fields = [
             Field.from_dict(f) for f in (item_schema.get("fields") or [])
         ]
+
+        # Best-effort: extract a sample value for each field from the page HTML
+        try:
+            if state._current_html and fields:
+                soup = BeautifulSoup(state._current_html, "html.parser")
+                fallback_container = None
+                if schema.get("is_catalog"):
+                    # For catalog pages, scope to the first item container
+                    container_sel = item_schema.get("item_container_selector")
+                    if container_sel:
+                        fallback_container = soup.select_one(container_sel)
+                else:
+                    # For detail pages, the whole page is the context
+                    fallback_container = soup
+
+                for f in fields:
+                    val = _extract_field_value(soup, f, fallback_container)
+                    if val is not None:
+                        f.sample_value = val[:200]
+        except Exception:
+            pass  # sample values are best-effort
 
         level_schema = LevelSchema(
             level=state.current_level,

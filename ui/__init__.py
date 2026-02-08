@@ -1,0 +1,3 @@
+"""
+CatalogChat Streamlit UI package.
+"""

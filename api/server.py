@@ -228,7 +228,6 @@ def _save_plan_by_url(url: str, plan: CatalogPlan, extra_data: dict | None = Non
 
     if extra_data:
         existing.update(extra_data)
-
     save_state(existing, path)
 
 
@@ -541,7 +540,6 @@ def fix_fields_endpoint(request: FieldFixRequest):
             extraction_plan = apply_field_fix(extraction_plan, field_name, fix)
 
     _save_extraction_plan_by_url(request.url, extraction_plan)
-
     return ExtractionPlanResponse(
         url=request.url,
         extraction_plan=extraction_plan.to_dict(),

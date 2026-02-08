@@ -133,6 +133,7 @@ class Field:
     original_name: str | None = None
     source_level: str | None = None
     source_level_num: int | None = None
+    sample_value: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -146,6 +147,7 @@ class Field:
             "original_name": self.original_name,
             "source_level": self.source_level,
             "source_level_num": self.source_level_num,
+            "sample_value": self.sample_value,
         }
 
     @classmethod
@@ -161,6 +163,7 @@ class Field:
             original_name=data.get("original_name"),
             source_level=data.get("source_level"),
             source_level_num=data.get("source_level_num"),
+            sample_value=data.get("sample_value"),
         )
 
 
