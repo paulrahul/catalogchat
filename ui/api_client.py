@@ -162,6 +162,7 @@ class CatalogChatAPI:
         logger.info("advance_discovery url=%s mode=%s user_input=%s", url, mode, user_input)
         # API uses "interactive" instead of "manual"
         api_mode = "interactive" if mode == "manual" else "auto"
+        print(f"url: {url}, mode: {api_mode}, user_input: {user_input}")
         data = self._make_request(
             "POST",
             "/plan/discovery",

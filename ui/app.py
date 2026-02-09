@@ -316,6 +316,7 @@ def render_discovery_step():
     # Check if discovery is complete
     if response.done:
         st.success("Navigation route discovered!")
+
         st.session_state.plan = response.plan
         st.session_state.current_step = 2
         st.rerun()

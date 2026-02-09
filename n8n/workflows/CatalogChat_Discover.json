@@ -179,7 +179,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\n  \"type\": \"decision\",\n  \"id\": \"next_step\",\n  \"step\": \"discover\",\n  \"user_input\": {\n    \"choice\": \"{{ $json.body.decision.action === 'confirm' ? 'final' : $json.body.decision.action }}\"\n  },\n  \"url\": \"{{ $('Advance discovery').item.json.decision.context.recommended_url }}\"\n}",
+        "responseBody": "={\n  \"type\": \"decision\",\n  \"id\": \"next_step\",\n  \"step\": \"discover\",\n  \"user_input\": {\n    \"choice\": \"{{ $json.body.decision.action }}\"\n  },\n  \"url\": \"{{ $('Webhook').item.json.body.url }}\"\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.respondToWebhook",
@@ -300,7 +300,7 @@
     "executionOrder": "v1",
     "availableInMCP": false
   },
-  "versionId": "f961335e-f693-4afe-9a21-2863b828a418",
+  "versionId": "c635d2bb-5635-4a68-83f8-bc0ad833cc1e",
   "meta": {
     "instanceId": "686dc357b66680024b550737da7203908475780e37c8d7bf49ff871b9fae6b99"
   },

@@ -309,7 +309,6 @@ def _handle_user_input(
         return state
 
     state.pending_decision = None
-
     if decision.type == DecisionType.CONFIRM_DRILLING:
         choice = user_input.get("choice", "continue")
 
