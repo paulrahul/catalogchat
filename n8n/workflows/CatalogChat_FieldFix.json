@@ -1,0 +1,334 @@
+{
+  "id": "ccFieldFix000001",
+  "name": "CatalogChat: FieldFix",
+  "nodes": [
+    {
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "0fe8da58-e328-441f-a7b2-8794e822de51",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "catalogchat/fix/suggest",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "6412963f-941f-4471-a1a0-a27238a70e6b",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Suggest correction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8080/plan/suggest-correction",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 600000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.body.url, field_name: $json.body.field_name, expected_value: $json.body.expected_value || '', user_feedback: $json.body.user_feedback || ('Expected value should be: ' + ($json.body.expected_value || '')) }) }}"
+      },
+      "id": "c6e24086-fe23-434c-820e-147a8c1a5736",
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "name": "Suggestion ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d106b66b-4fa5-4318-8c28-20d6831d44ff",
+              "leftValue": "={{ Boolean($json.statusCode < 400) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2512f0e0-6f84-479c-8b06-003e175e8547",
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "name": "Respond with error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'error', step: 'verify', url: $('Webhook').item.json.body.url, message: typeof $json.body?.detail === 'string' ? $json.body.detail : $json.body?.detail ? JSON.stringify($json.body.detail) : ($json.error?.message || $json.message || 'Could not reach the CatalogChat API at http://127.0.0.1:8080') } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "9eaba88e-76b5-4f43-8fff-81e9d0653975",
+      "position": [
+        660,
+        220
+      ]
+    },
+    {
+      "name": "Respond with suggestion",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'result', id: 'correction', step: 'verify', url: $json.body.url, field_name: $json.body.field_name, correction: $json.body.correction, found_elements: $json.body.found_elements || [] } }}",
+        "options": {}
+      },
+      "id": "254a3a1d-1fce-45da-90d4-801968e56d0e",
+      "position": [
+        660,
+        -100
+      ]
+    },
+    {
+      "name": "Apply webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "af1047d3-1d6c-4442-8943-3bb66b8650a2",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "catalogchat/fix/apply",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "7a1d1ee7-6df0-4999-aa6d-5630aa2ecd9e",
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "name": "Apply fix",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8080/wait_response",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 600000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.body.url, decision: { id: 'fix_field', step: 'field_correction', action: 'fix' }, payload: { fixes: $json.body.fixes || [], resample: true, num_rows: $json.body.num_rows || 3 }, meta: { source: 'n8n' } }) }}"
+      },
+      "id": "da763149-38b6-467d-a87e-c7acba3cc88a",
+      "position": [
+        220,
+        400
+      ]
+    },
+    {
+      "name": "Apply ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "a856af38-e65b-4c87-be33-a4849ebb6ebe",
+              "leftValue": "={{ Boolean($json.statusCode < 400) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e0299209-e93e-4ad0-a3f0-6b303333a185",
+      "position": [
+        440,
+        400
+      ]
+    },
+    {
+      "name": "Respond with apply error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'error', step: 'verify', url: $('Apply webhook').item.json.body.url, message: typeof $json.body?.detail === 'string' ? $json.body.detail : $json.body?.detail ? JSON.stringify($json.body.detail) : ($json.error?.message || $json.message || 'Could not reach the CatalogChat API at http://127.0.0.1:8080') } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "739d4647-28ba-47b7-ac7e-dd8dde5ae66e",
+      "position": [
+        660,
+        620
+      ]
+    },
+    {
+      "name": "Respond with new sample",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'result', id: 'sample', step: 'verify', url: $('Apply webhook').item.json.body.url, sample: $json.body.sample, decision: $json.body.next_decision ?? null } }}",
+        "options": {}
+      },
+      "id": "e127ffeb-1e4b-4316-8a2f-be0ad3579cd9",
+      "position": [
+        660,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Suggest correction": {
+      "main": [
+        [
+          {
+            "node": "Suggestion ok?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Suggestion ok?": {
+      "main": [
+        [
+          {
+            "node": "Respond with suggestion",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Suggest correction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply fix": {
+      "main": [
+        [
+          {
+            "node": "Apply ok?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with apply error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply ok?": {
+      "main": [
+        [
+          {
+            "node": "Respond with new sample",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with apply error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply webhook": {
+      "main": [
+        [
+          {
+            "node": "Apply fix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

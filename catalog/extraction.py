@@ -9,6 +9,7 @@ This module contains:
 """
 
 import re
+import traceback
 
 from bs4 import BeautifulSoup
 
@@ -47,6 +48,8 @@ def build_extraction_plan(plan: CatalogPlan) -> ExtractionPlan:
     navigation_path = []
     total_levels = len(plan.schema_chain)
 
+    all_fields = []
+
     for level_schema in plan.schema_chain:
         level_num = level_schema.level
         level_name = level_schema.catalog_type or f"level_{level_num}"
@@ -54,15 +57,15 @@ def build_extraction_plan(plan: CatalogPlan) -> ExtractionPlan:
         # Convert fields to the right format
         level_fields = []
         for field in level_schema.fields:
-            level_fields.append(
-                Field(
-                    name=field.name,
-                    type=field.type,
-                    container_selector=field.container_selector,
-                    selector=field.selector,
-                    attribute=field.attribute,
-                )
+            f = Field(
+                name=field.name,
+                type=field.type,
+                container_selector=field.container_selector,
+                selector=field.selector,
+                attribute=field.attribute,
             )
+            level_fields.append(f)
+            all_fields.append(f)
 
         # Determine drill-down selector from nesting analysis
         drill_selector = None
@@ -83,13 +86,6 @@ def build_extraction_plan(plan: CatalogPlan) -> ExtractionPlan:
 
         navigation_path.append(level_plan)
 
-    # Build field name mapping: "level_name:original_name" -> merged_name
-    field_name_mapping = {}
-    for field in plan.fields:
-        if field.source_level and field.original_name:
-            key = f"{field.source_level}:{field.original_name}"
-            field_name_mapping[key] = field.name
-
     # Build summary
     level_names = [lp.catalog_type or f"Level {lp.level}" for lp in navigation_path]
     path_description = " -> ".join(level_names)
@@ -97,13 +93,11 @@ def build_extraction_plan(plan: CatalogPlan) -> ExtractionPlan:
     return ExtractionPlan(
         root_url=plan.root_url,
         navigation_path=navigation_path,
-        fields=plan.fields.copy(),
-        field_name_mapping=field_name_mapping,
-        final_field_names=[f.name for f in plan.fields],
+        fields=all_fields,
         summary={
             "path": path_description,
             "depth": len(navigation_path),
-            "total_fields": len(plan.fields),
+            "total_fields": len(all_fields),
             "item_name": plan.item_name,
         },
     )
@@ -115,28 +109,22 @@ def build_extraction_plan(plan: CatalogPlan) -> ExtractionPlan:
 
 
 def _extract_field_value(
-    soup_or_element, field: dict | Field, fallback_container=None
+    soup_or_element, field: Field, fallback_container=None
 ) -> str | None:
     """
     Extract a field value using container_selector and selector.
 
     Args:
         soup_or_element: BeautifulSoup soup object or element to search within
-        field: Field definition with 'container_selector', 'selector', and 'attribute' keys
+        field: Field definition with container_selector, selector, and attribute
         fallback_container: Element to use if field has no container_selector
 
     Returns:
         Extracted value or None
     """
-    # Handle both Field objects and dicts
-    if isinstance(field, Field):
-        container_selector = field.container_selector
-        selector = field.selector
-        attribute = field.attribute or "text"
-    else:
-        container_selector = field.get("container_selector")
-        selector = field.get("selector")
-        attribute = field.get("attribute", "text")
+    container_selector = field.container_selector
+    selector = field.selector
+    attribute = field.attribute or "text"
 
     if not selector:
         return None
@@ -168,7 +156,7 @@ def _extract_field_value(
 
 
 def _extract_items_from_page(
-    html: str, level_plan: LevelPlan | dict, base_url: str, field_name_mapping: dict | None = None
+    html: str, level_plan: LevelPlan, base_url: str
 ) -> list[dict]:
     """
     Extract all items from a page using the level's extraction plan.
@@ -177,33 +165,19 @@ def _extract_items_from_page(
         html: The HTML content
         level_plan: The level's plan with item_container_selector and fields
         base_url: Base URL for resolving relative links
-        field_name_mapping: Maps "level_name:original_name" -> merged_name
 
     Returns:
-        List of dicts, each with 'fields' (extracted values with merged names) and 'drill_url' (if applicable)
+        List of dicts, each with 'fields' (extracted values) and 'drill_url' (if applicable)
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # Handle both LevelPlan objects and dicts
-    if isinstance(level_plan, LevelPlan):
-        item_selector = level_plan.item_container_selector
-        fields = level_plan.fields
-        drill_selector = level_plan.drill_down_link_selector
-        is_final = level_plan.is_final_level
-        level_name = level_plan.level_name or level_plan.catalog_type or f"level_{level_plan.level}"
-    else:
-        item_selector = level_plan.get("item_container_selector")
-        fields = level_plan.get("fields", [])
-        drill_selector = level_plan.get("drill_down_link_selector")
-        is_final = level_plan.get("is_final_level", True)
-        level_name = level_plan.get("level_name") or level_plan.get("catalog_type") or f"level_{level_plan.get('level', 1)}"
-
-    if not item_selector:
+    if not level_plan.item_container_selector:
         return []
 
     try:
-        items = soup.select(item_selector)
+        items = soup.select(level_plan.item_container_selector)
     except Exception:
+        traceback.print_exc()
         return []
 
     results = []
@@ -211,67 +185,54 @@ def _extract_items_from_page(
     for item in items:
         # Extract field values
         row = {}
-        for field in fields:
-            if isinstance(field, Field):
-                original_name = field.name
-            else:
-                original_name = field.get("name")
-
-            value = _extract_field_value(soup, field, fallback_container=item)
-
-            # Map to merged field name if mapping exists
-            if field_name_mapping:
-                mapping_key = f"{level_name}:{original_name}"
-                merged_name = field_name_mapping.get(mapping_key, original_name)
-            else:
-                merged_name = original_name
-
-            row[merged_name] = value
+        for f in level_plan.fields:
+            row[f.name] = _extract_field_value(soup, f, fallback_container=item)
 
         # Extract drill-down URL if not final level
         drill_url = None
-        if not is_final:
-            # First check if the item itself is a link
-            if item.name == "a" and item.get("href"):
-                href = item.get("href")
-                if href and not href.startswith(("#", "javascript:", "mailto:")):
-                    drill_url = resolve_url(base_url, href)
+        if not level_plan.is_final_level:
+            drill_url = _extract_drill_url(item, level_plan.drill_down_link_selector, base_url)
 
-            # If not, try the drill selector
-            if not drill_url and drill_selector:
-                try:
-                    link_el = item.select_one(drill_selector)
-                    if link_el:
-                        href = link_el.get("href")
-                        if href:
-                            drill_url = resolve_url(base_url, href)
-                except Exception:
-                    pass
-
-            # Fallback: find any link in the item
-            if not drill_url:
-                try:
-                    link_el = item.select_one("a[href]")
-                    if link_el:
-                        href = link_el.get("href")
-                        if href and not href.startswith(("#", "javascript:", "mailto:")):
-                            drill_url = resolve_url(base_url, href)
-                except Exception:
-                    pass
-
-        # If there's a 'url' field that's null but we have a drill_url, use the drill_url
-        url_field_names = []
-        for f in fields:
-            fname = f.name if isinstance(f, Field) else f.get("name")
-            if fname:
-                url_field_names.append(fname)
-
-        if drill_url and row.get("url") is None and "url" in url_field_names:
+        # If there's a 'url' field that's null but we have a drill_url, use it
+        field_names = {f.name for f in level_plan.fields}
+        if drill_url and row.get("url") is None and "url" in field_names:
             row["url"] = drill_url
 
         results.append({"fields": row, "drill_url": drill_url})
 
     return results
+
+
+def _extract_drill_url(item, drill_selector: str | None, base_url: str) -> str | None:
+    """Extract a drill-down URL from an item element."""
+    # First check if the item itself is a link
+    if item.name == "a" and item.get("href"):
+        href = item.get("href")
+        if href and not href.startswith(("#", "javascript:", "mailto:")):
+            return resolve_url(base_url, href)
+
+    # Try the drill selector
+    if drill_selector:
+        try:
+            link_el = item.select_one(drill_selector)
+            if link_el:
+                href = link_el.get("href")
+                if href:
+                    return resolve_url(base_url, href)
+        except Exception:
+            traceback.print_exc()
+
+    # Fallback: find any link in the item
+    try:
+        link_el = item.select_one("a[href]")
+        if link_el:
+            href = link_el.get("href")
+            if href and not href.startswith(("#", "javascript:", "mailto:")):
+                return resolve_url(base_url, href)
+    except Exception:
+        traceback.print_exc()
+
+    return None
 
 
 # -------------------------
@@ -280,43 +241,30 @@ def _extract_items_from_page(
 
 
 def _scrape_level(
-    extraction_plan: ExtractionPlan | dict,
+    extraction_plan: ExtractionPlan,
     target_level: int,
     current_level: int = 1,
     current_url: str | None = None,
-    parent_context: dict | None = None,
-    max_items_per_level: int | None = None,
+    parent_fields: dict | None = None,
     max_total_rows: int | None = None,
     rows_collected: list | None = None,
     on_progress=None,
 ) -> list[dict]:
     """
-    Recursively scrape data from level 1 to target_level.
+    DFS traversal of the catalog hierarchy.
 
-    This function traverses the catalog hierarchy, collecting fields from each level.
-    Parent-level fields are carried forward as context for child items.
+    Descends through all levels, collecting fields at each level. When the
+    target depth is reached, all accumulated fields become one row. Then
+    backtracks to the parent and drills into the next sibling link.
+
+    Each non-final level page may contain *multiple* drill-down items (e.g. a
+    category page listing many products). The function iterates over every
+    drill-down link, recursing into each one, until the target row count is met.
     """
-    # Handle both ExtractionPlan objects and dicts
-    if isinstance(extraction_plan, ExtractionPlan):
-        navigation_path = extraction_plan.navigation_path
-        field_name_mapping = extraction_plan.field_name_mapping
-    else:
-        navigation_path = extraction_plan.get("navigation_path", [])
-        field_name_mapping = extraction_plan.get("field_name_mapping", {})
-
-    # Initialize rows_collected tracker on first call
-    if rows_collected is None:
-        rows_collected = []
-
-    # Check if we've already collected enough rows
-    if max_total_rows is not None and len(rows_collected) >= max_total_rows:
-        return []
-
-    # Find current level plan
+    # Find the level plan for the current level
     level_plan = None
-    for lp in navigation_path:
-        lp_level = lp.level if isinstance(lp, LevelPlan) else lp.get("level")
-        if lp_level == current_level:
+    for lp in extraction_plan.navigation_path:
+        if lp.level == current_level:
             level_plan = lp
             break
 
@@ -325,36 +273,30 @@ def _scrape_level(
             on_progress("Error", f"Level {current_level} not found in extraction plan")
         return []
 
-    # Determine URL to scrape
-    if isinstance(level_plan, LevelPlan):
-        url = current_url or level_plan.sample_url
-        item_selector = level_plan.item_container_selector
-        level_type = level_plan.catalog_type or f"Level {current_level}"
-    else:
-        url = current_url or level_plan.get("sample_url")
-        item_selector = level_plan.get("item_container_selector")
-        level_type = level_plan.get("catalog_type") or f"Level {current_level}"
+    # Initialize shared mutable list on first call
+    if rows_collected is None:
+        rows_collected = []
+    if parent_fields is None:
+        parent_fields = {}
 
+    url = current_url or level_plan.sample_url
     if not url:
         if on_progress:
             on_progress("Error", f"No URL for level {current_level}")
         return []
 
-    # Check for required selectors
-    if not item_selector:
+    if not level_plan.item_container_selector:
         if on_progress:
-            on_progress("Warning", f"No item_container_selector for {level_type} - cannot extract items")
+            level_type = level_plan.catalog_type or f"Level {current_level}"
+            on_progress("Warning", f"No item_container_selector for {level_type}")
         return []
 
-    # Initialize parent context
-    if parent_context is None:
-        parent_context = {}
-
     if on_progress:
+        level_type = level_plan.catalog_type or f"Level {current_level}"
         short_url = url[:50] + "..." if len(url) > 50 else url
         on_progress(f"Scraping {level_type}", short_url)
 
-    # Fetch and parse the page
+    # Fetch page
     try:
         html = fetch_html(url)
     except Exception as e:
@@ -363,51 +305,28 @@ def _scrape_level(
         return []
 
     # Extract items from this page
-    items = _extract_items_from_page(html, level_plan, url, field_name_mapping)
+    items = _extract_items_from_page(html, level_plan, url)
 
-    if not items:
-        if on_progress:
-            on_progress("Warning", f"No items found with selector: {item_selector[:40] if item_selector else 'N/A'}")
-        return []
-
-    # Determine how many items to process
-    if max_total_rows is not None:
-        remaining = max_total_rows - len(rows_collected)
-        if remaining <= 0:
-            return []
-        items_to_process = items
-        if on_progress:
-            on_progress(f"Found {len(items)} items", f"need {remaining} more rows")
-    elif max_items_per_level is not None:
-        items_to_process = items[:max_items_per_level]
-        if on_progress:
-            on_progress(f"Found {len(items)} items", f"processing up to {max_items_per_level}")
-    else:
-        items_to_process = items
-        if on_progress:
-            on_progress(f"Found {len(items)} items", "processing all")
+    if on_progress:
+        remaining = (max_total_rows - len(rows_collected)) if max_total_rows else "all"
+        on_progress(f"Found {len(items)} items", f"need {remaining} more rows")
 
     results = []
 
-    for item in items_to_process:
-        # Check if we've collected enough rows
+    for item in items:
+        # Check row limit before processing each item
         if max_total_rows is not None and len(rows_collected) >= max_total_rows:
             break
 
-        # Merge parent context with this item's fields
-        item_context = {**parent_context, **item["fields"]}
+        # Accumulate fields from this level onto parent fields
+        accumulated = {**parent_fields, **item["fields"]}
 
         if current_level >= target_level:
-            # We've reached the target level - add this row to results
-            results.append(item_context)
-            rows_collected.append(item_context)
-
-            if max_total_rows is not None and len(rows_collected) >= max_total_rows:
-                if on_progress:
-                    on_progress("Target reached", f"{len(rows_collected)} rows collected")
-                break
+            # Reached target depth — emit a row
+            results.append(accumulated)
+            rows_collected.append(accumulated)
         else:
-            # Need to go deeper - follow drill URL
+            # Not at target depth yet — drill down
             drill_url = item.get("drill_url")
             if drill_url:
                 child_rows = _scrape_level(
@@ -415,27 +334,24 @@ def _scrape_level(
                     target_level=target_level,
                     current_level=current_level + 1,
                     current_url=drill_url,
-                    parent_context=item_context,
-                    max_items_per_level=max_items_per_level,
+                    parent_fields=accumulated,
                     max_total_rows=max_total_rows,
                     rows_collected=rows_collected,
                     on_progress=on_progress,
                 )
                 results.extend(child_rows)
             else:
-                if on_progress and current_level < target_level:
-                    on_progress("Warning", f"No drill-down URL found, stopping at level {current_level}")
-                results.append(item_context)
-                rows_collected.append(item_context)
-
-                if max_total_rows is not None and len(rows_collected) >= max_total_rows:
-                    break
+                # No drill URL available — emit what we have
+                if on_progress:
+                    on_progress("Warning", f"No drill-down URL at level {current_level}, emitting partial row")
+                results.append(accumulated)
+                rows_collected.append(accumulated)
 
     return results
 
 
 def scrape_sample(
-    extraction_plan: ExtractionPlan | dict,
+    extraction_plan: ExtractionPlan,
     target_level: int | None = None,
     max_rows: int = 3,
     on_progress=None,
@@ -455,15 +371,7 @@ def scrape_sample(
     Returns:
         SampleResult with rows, field_names, target_level, and errors
     """
-    # Handle both ExtractionPlan objects and dicts
-    if isinstance(extraction_plan, ExtractionPlan):
-        navigation_path = extraction_plan.navigation_path
-        field_name_mapping = extraction_plan.field_name_mapping
-        final_field_names = extraction_plan.final_field_names
-    else:
-        navigation_path = extraction_plan.get("navigation_path", [])
-        field_name_mapping = extraction_plan.get("field_name_mapping", {})
-        final_field_names = extraction_plan.get("final_field_names", [])
+    navigation_path = extraction_plan.navigation_path
 
     if not navigation_path:
         return SampleResult(
@@ -474,10 +382,7 @@ def scrape_sample(
         )
 
     # Default to deepest level
-    max_level = max(
-        lp.level if isinstance(lp, LevelPlan) else lp.get("level", 1)
-        for lp in navigation_path
-    )
+    max_level = max(lp.level for lp in navigation_path)
     if target_level is None:
         target_level = max_level
 
@@ -493,43 +398,21 @@ def scrape_sample(
     if on_progress:
         on_progress("Starting hierarchical scrape", f"levels 1-{target_level}, target: {max_rows} rows")
 
-    # Filter to only fields from levels up to target_level
-    fields_from_target_levels = set()
+    # Build field_names from levels up to target_level
+    field_names = []
+    seen = set()
     for lp in navigation_path:
-        lp_level = lp.level if isinstance(lp, LevelPlan) else lp.get("level")
-        if lp_level <= target_level:
-            level_name = (
-                (lp.level_name or lp.catalog_type or f"level_{lp.level}")
-                if isinstance(lp, LevelPlan)
-                else (lp.get("level_name") or lp.get("catalog_type") or f"level_{lp.get('level')}")
-            )
-            fields = lp.fields if isinstance(lp, LevelPlan) else lp.get("fields", [])
-            for field in fields:
-                original_name = field.name if isinstance(field, Field) else field.get("name")
-                mapping_key = f"{level_name}:{original_name}"
-                merged_name = field_name_mapping.get(mapping_key, original_name)
-                if merged_name:
-                    fields_from_target_levels.add(merged_name)
-
-    # Final field names
-    field_names = [f for f in final_field_names if f in fields_from_target_levels]
+        if lp.level <= target_level:
+            for f in lp.fields:
+                if f.name and f.name not in seen:
+                    field_names.append(f.name)
+                    seen.add(f.name)
 
     # Check if any level is missing selectors
     missing_selectors = []
     for lp in navigation_path:
-        lp_level = lp.level if isinstance(lp, LevelPlan) else lp.get("level")
-        item_selector = (
-            lp.item_container_selector
-            if isinstance(lp, LevelPlan)
-            else lp.get("item_container_selector")
-        )
-        if lp_level <= target_level and not item_selector:
-            level_name = (
-                (lp.catalog_type or f"Level {lp.level}")
-                if isinstance(lp, LevelPlan)
-                else (lp.get("catalog_type") or f"Level {lp.get('level')}")
-            )
-            missing_selectors.append(level_name)
+        if lp.level <= target_level and not lp.item_container_selector:
+            missing_selectors.append(lp.catalog_type or f"Level {lp.level}")
 
     if missing_selectors:
         return SampleResult(
@@ -558,18 +441,11 @@ def scrape_sample(
             errors=[f"Scraping error: {str(e)}"],
         )
 
-    # Filter rows to only include fields in final_field_names
-    field_names_set = set(field_names)
-    filtered_rows = []
-    for row in rows:
-        filtered_row = {k: v for k, v in row.items() if k in field_names_set}
-        filtered_rows.append(filtered_row)
-
     if on_progress:
-        on_progress("Scraping complete", f"{len(filtered_rows)} rows collected")
+        on_progress("Scraping complete", f"{len(rows)} rows collected")
 
     return SampleResult(
-        rows=filtered_rows,
+        rows=rows,
         field_names=field_names,
         target_level=target_level,
         errors=[],
@@ -577,7 +453,7 @@ def scrape_sample(
 
 
 def scrape_all(
-    extraction_plan: ExtractionPlan | dict,
+    extraction_plan: ExtractionPlan,
     target_level: int | None = None,
     max_rows: int | None = None,
     on_progress=None,
@@ -659,23 +535,18 @@ def find_field_in_plan(
     field_name: str,
 ) -> tuple[LevelPlan | None, Field | None]:
     """
-    Find a field in the extraction plan by its merged name.
+    Find a field in the extraction plan by name.
 
     Args:
         extraction_plan: The extraction plan to search
-        field_name: The merged field name to find
+        field_name: The field name to find
 
     Returns:
         Tuple of (LevelPlan, Field) where the field was found, or (None, None) if not found
     """
     for level_plan in extraction_plan.navigation_path:
-        level_name = level_plan.level_name or level_plan.catalog_type
         for field in level_plan.fields:
-            # Check if this field maps to the requested field_name
-            mapping_key = f"{level_name}:{field.name}"
-            mapped_name = extraction_plan.field_name_mapping.get(mapping_key, field.name)
-
-            if mapped_name == field_name or field.name == field_name:
+            if field.name == field_name:
                 return level_plan, field
 
     return None, None
@@ -748,18 +619,6 @@ def apply_field_fix(
     Returns:
         Updated ExtractionPlan
     """
-    # Update field in extraction_plan.fields
-    for field in extraction_plan.fields:
-        if field.name == field_name:
-            if fix.get("container_selector") is not None:
-                field.container_selector = fix["container_selector"]
-            if fix.get("selector") is not None:
-                field.selector = fix["selector"]
-            if fix.get("attribute") is not None:
-                field.attribute = fix["attribute"]
-            break
-
-    # Also update in navigation_path
     for level_plan in extraction_plan.navigation_path:
         for field in level_plan.fields:
             if field.name == field_name:
@@ -769,6 +628,6 @@ def apply_field_fix(
                     field.selector = fix["selector"]
                 if fix.get("attribute") is not None:
                     field.attribute = fix["attribute"]
-                break
+                return extraction_plan
 
     return extraction_plan

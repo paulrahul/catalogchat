@@ -32,7 +32,6 @@ def create_plan(root_url: str) -> CatalogPlan:
         item_name="Item",
         nesting_depth=0,
         level_names=[],
-        fields=[],
         schema_chain=[],
         visited_urls=[],
         created_at=now,

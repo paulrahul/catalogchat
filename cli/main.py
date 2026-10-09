@@ -93,18 +93,18 @@ def display_plan(plan: CatalogPlan):
     print(f"\n  Item Name: {plan.item_name}")
     print(f"  Nesting Depth: {plan.nesting_depth} levels")
     print(f"  Levels: {' -> '.join(plan.level_names)}")
-    print(f"\n  Fields ({len(plan.fields)} total):")
 
-    for i, field in enumerate(plan.fields, 1):
-        req = "required" if field.required else "optional"
-        source = f"[from: {field.source_level}]" if field.source_level else ""
-        name_display = field.name
-        if field.original_name and field.original_name != field.name:
-            name_display = f"{field.name} (was: {field.original_name})"
+    total_fields = sum(len(ls.fields) for ls in plan.schema_chain)
+    print(f"\n  Fields ({total_fields} total):")
 
-        print(f"    {i}. {name_display} ({field.type}, {req}) {source}")
-        if field.description:
-            print(f"       {field.description}")
+    for level_schema in plan.schema_chain:
+        level_name = level_schema.catalog_type or f"Level {level_schema.level}"
+        print(f"\n    [{level_name}]")
+        for i, field in enumerate(level_schema.fields, 1):
+            req = "required" if field.required else "optional"
+            print(f"      {i}. {field.name} ({field.type}, {req})")
+            if field.description:
+                print(f"         {field.description}")
 
     print()
 
@@ -449,12 +449,23 @@ def collect_field_corrections(
 
 
 def edit_schema_interactive(plan: CatalogPlan) -> CatalogPlan:
-    """Allow user to delete or rename fields from the plan."""
+    """Allow user to delete or rename fields from the plan.
+
+    Fields are numbered sequentially across all levels for easy reference.
+    """
     print_section("Schema Editor")
     print("  Commands:")
     print("    d <nums>       - Delete fields (e.g., 'd 1,3,5')")
     print("    r <num> <name> - Rename field (e.g., 'r 2 movie_title')")
     print()
+
+    def _get_flat_fields():
+        """Return a flat list of (level_schema, field_index, field) tuples."""
+        flat = []
+        for ls in plan.schema_chain:
+            for fi, f in enumerate(ls.fields):
+                flat.append((ls, fi, f))
+        return flat
 
     while True:
         display_plan(plan)
@@ -464,6 +475,8 @@ def edit_schema_interactive(plan: CatalogPlan) -> CatalogPlan:
         if cmd == "":
             break
 
+        flat_fields = _get_flat_fields()
+
         # Check for rename command
         if cmd.lower().startswith("r "):
             parts = cmd.split(maxsplit=2)
@@ -471,12 +484,13 @@ def edit_schema_interactive(plan: CatalogPlan) -> CatalogPlan:
                 try:
                     idx = int(parts[1]) - 1
                     new_name = parts[2]
-                    if 0 <= idx < len(plan.fields):
-                        old_name = plan.fields[idx].name
-                        plan.fields[idx].name = new_name
+                    if 0 <= idx < len(flat_fields):
+                        _, _, field = flat_fields[idx]
+                        old_name = field.name
+                        field.name = new_name
                         print(f"  Renamed: {old_name} -> {new_name}")
                     else:
-                        print(f"  Invalid field number. Use 1-{len(plan.fields)}")
+                        print(f"  Invalid field number. Use 1-{len(flat_fields)}")
                 except ValueError:
                     print("  Invalid format. Use 'r <num> <new_name>'")
             else:
@@ -491,13 +505,14 @@ def edit_schema_interactive(plan: CatalogPlan) -> CatalogPlan:
                     indices = [int(x.strip()) - 1 for x in parts[1].split(",")]
                     indices = sorted(set(indices), reverse=True)
                     deleted = []
-                    fields = list(plan.fields)
                     for idx in indices:
-                        if 0 <= idx < len(fields):
-                            deleted.append(fields[idx].name)
-                            del fields[idx]
+                        if 0 <= idx < len(flat_fields):
+                            ls, fi, field = flat_fields[idx]
+                            deleted.append(field.name)
+                            del ls.fields[fi]
+                            # Refresh flat_fields after deletion
+                            flat_fields = _get_flat_fields()
                     if deleted:
-                        plan.fields = fields
                         print(f"  Deleted: {', '.join(deleted)}")
                     else:
                         print("  No valid fields to delete.")
@@ -561,10 +576,14 @@ def check_and_prompt_reuse(url: str) -> CatalogPlan | None:
 
     # Show summary
     plan_data = existing.get("plan", {})
+    total_fields = sum(
+        len(level.get("fields", []))
+        for level in plan_data.get("schema_chain", [])
+    )
     print(f"\n  Previous scan summary:")
     print(f"    Item Name: {plan_data.get('item_name')}")
     print(f"    Nesting Depth: {plan_data.get('nesting_depth')} levels")
-    print(f"    Fields: {len(plan_data.get('fields', []))}")
+    print(f"    Fields: {total_fields}")
     print(f"    Path: {' -> '.join(plan_data.get('level_names', []))}")
 
     print("\n  Would you like to:")

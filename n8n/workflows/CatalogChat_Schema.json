@@ -1,0 +1,174 @@
+{
+  "id": "ccSchemaEdit0001",
+  "name": "CatalogChat: Schema",
+  "nodes": [
+    {
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "aa5cf4ef-1805-4e86-9c41-bed48cff5d5f",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "catalogchat/schema",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "5e58a2f8-187d-4d0d-a082-0d250ea78b0a",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Apply schema edits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "PUT",
+        "url": "http://127.0.0.1:8080/plan",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.body.url, edits: $json.body.edits || [] }) }}"
+      },
+      "id": "91c8b2f0-603c-4a86-bfa4-48ab6bafab5b",
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "name": "API ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "802e0517-5d9a-4509-b0ee-1e63f7e01709",
+              "leftValue": "={{ Boolean($json.statusCode < 400) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7abdc353-ceb0-464d-985e-95136d557ccc",
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "name": "Respond with error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'error', step: 'review', url: $('Webhook').item.json.body.url, message: typeof $json.body?.detail === 'string' ? $json.body.detail : $json.body?.detail ? JSON.stringify($json.body.detail) : ($json.error?.message || $json.message || 'Could not reach the CatalogChat API at http://127.0.0.1:8080') } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "1be26131-7514-40de-af00-15af9ddb312f",
+      "position": [
+        660,
+        220
+      ]
+    },
+    {
+      "name": "Respond with plan",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'result', id: 'plan', step: 'review', url: $('Webhook').item.json.body.url, plan: $json.body.plan } }}",
+        "options": {}
+      },
+      "id": "2adbcc09-9b7c-4250-b7b0-7042fa680678",
+      "position": [
+        660,
+        -100
+      ]
+    }
+  ],
+  "connections": {
+    "Apply schema edits": {
+      "main": [
+        [
+          {
+            "node": "API ok?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API ok?": {
+      "main": [
+        [
+          {
+            "node": "Respond with plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Apply schema edits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

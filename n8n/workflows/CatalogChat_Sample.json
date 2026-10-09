@@ -1,0 +1,324 @@
+{
+  "id": "ccSampleData0001",
+  "name": "CatalogChat: Sample",
+  "nodes": [
+    {
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "8e8446b1-2ab0-44f2-b46a-321550f37da9",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "catalogchat/sample",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "a6a5e9dd-707d-4796-8f17-1554927f73aa",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Rebuild extraction plan?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e9317bb8-0890-4119-9260-b21d70dcd7cf",
+              "leftValue": "={{ Boolean($json.body.rebuild !== false) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cea1b052-cf95-48b7-a545-8670fcfe7fb4",
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "name": "Build extraction plan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8080/plan/extraction-plan",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $('Webhook').item.json.body.url }) }}"
+      },
+      "id": "1fb0be9b-b193-4506-8366-ad428847fd23",
+      "position": [
+        440,
+        -120
+      ]
+    },
+    {
+      "name": "Plan built?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6f4fa47e-c327-40e0-846d-3bbc8e704068",
+              "leftValue": "={{ Boolean($json.statusCode < 400) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4bbf3e5c-14ca-41ba-8773-00f23ed711f1",
+      "position": [
+        660,
+        -120
+      ]
+    },
+    {
+      "name": "Respond with error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'error', step: 'verify', url: $('Webhook').item.json.body.url, message: typeof $json.body?.detail === 'string' ? $json.body.detail : $json.body?.detail ? JSON.stringify($json.body.detail) : ($json.error?.message || $json.message || 'Could not reach the CatalogChat API at http://127.0.0.1:8080') } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "78cdb225-afa4-43ac-bb09-144f065f009f",
+      "position": [
+        880,
+        100
+      ]
+    },
+    {
+      "name": "Scrape sample",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8080/plan/sample",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 600000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $('Webhook').item.json.body.url, num_rows: $('Webhook').item.json.body.num_rows || 3 }) }}"
+      },
+      "id": "20cf8966-9de9-4d97-84d5-8d70a5cce126",
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "name": "Sample ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c1d7023d-efc2-4d28-8f02-173ccf53cb70",
+              "leftValue": "={{ Boolean($json.statusCode < 400) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "bbfb0d59-b6ee-4ae2-bae4-544032520fcc",
+      "position": [
+        1100,
+        0
+      ]
+    },
+    {
+      "name": "Respond with sample",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'result', id: 'sample', step: 'verify', url: $('Webhook').item.json.body.url, sample: $json.body.sample, decision: $json.body.decision ?? null } }}",
+        "options": {}
+      },
+      "id": "7ae68647-fae5-4470-859d-134366d1abd5",
+      "position": [
+        1320,
+        -100
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Rebuild extraction plan?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build extraction plan": {
+      "main": [
+        [
+          {
+            "node": "Plan built?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan built?": {
+      "main": [
+        [
+          {
+            "node": "Scrape sample",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rebuild extraction plan?": {
+      "main": [
+        [
+          {
+            "node": "Build extraction plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Scrape sample",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape sample": {
+      "main": [
+        [
+          {
+            "node": "Sample ok?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample ok?": {
+      "main": [
+        [
+          {
+            "node": "Respond with sample",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

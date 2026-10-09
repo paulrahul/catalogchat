@@ -22,10 +22,10 @@ def main():
         sys.executable, "-m", "streamlit", "run",
         str(app_path),
         "--server.headless", "true",
-        "--theme.primaryColor", "#96B6C5",
-        "--theme.backgroundColor", "#F1F0E8",
-        "--theme.secondaryBackgroundColor", "#EEE0C9",
-        "--theme.textColor", "#3A4A50",
+        "--theme.primaryColor", "#5AA9E6",
+        "--theme.backgroundColor", "#F9F9F9",
+        "--theme.secondaryBackgroundColor", "#FFFFFF",
+        "--theme.textColor", "#1A2B3C",
     ]
 
     try:

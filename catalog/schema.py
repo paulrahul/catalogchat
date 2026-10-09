@@ -67,7 +67,25 @@ def summarize_dom(html: str, max_blocks: int = 20, on_progress=None) -> dict:
             text = re.sub(r"\s+", " ", text)
             samples.append({"class": cls, "tag": n.name, "text_sample": text[:300]})
 
-    links = [a.get("href") for a in soup.find_all("a", href=True)][:20]
+    link_samples = []
+    seen_hrefs: set[str] = set()
+    for a in soup.find_all("a", href=True)[:60]:
+        href = a.get("href", "")
+        if not href or href in seen_hrefs:
+            continue
+        seen_hrefs.add(href)
+        text = a.get_text(strip=True)[:60]
+        parent = a.parent
+        parent_tag = parent.name if parent else ""
+        parent_cls = " ".join(parent.get("class", []))[:50] if parent else ""
+        in_nav = bool(a.find_parent(["nav", "header", "footer"]))
+        link_samples.append({
+            "href": href,
+            "text": text,
+            "parent_tag": parent_tag,
+            "parent_class": parent_cls,
+            "in_nav": in_nav,
+        })
 
     # Extract structural elements for detail pages
     structural_elements = []
@@ -155,7 +173,7 @@ def summarize_dom(html: str, max_blocks: int = 20, on_progress=None) -> dict:
         "title": soup.title.string if soup.title else None,
         "common_classes": common_classes,
         "samples": samples,
-        "link_samples": links,
+        "link_samples": link_samples,
         "structural_elements": structural_elements,
     }
 
@@ -399,8 +417,27 @@ Link samples:
 def _build_nesting_analysis_prompt(
     url: str, dom_summary: dict, schema: dict, link_samples: list
 ) -> str:
-    """Build the prompt for nesting analysis."""
-    numbered_links = "\n".join([f"  {i}: {link}" for i, link in enumerate(link_samples)])
+    """Build the prompt for nesting analysis.
+
+    link_samples may be list[str] (legacy) or list[dict] with keys
+    href, text, in_nav (produced by enriched summarize_dom or item extraction).
+    """
+    from urllib.parse import urlparse
+    root_path = urlparse(url).path.rstrip("/")
+
+    formatted_links = []
+    for i, link in enumerate(link_samples):
+        if isinstance(link, dict):
+            href = link.get("href", "")
+            text = link.get("text", "").strip()
+            in_nav = link.get("in_nav", False)
+            nav_note = "  ⚠ navigation" if in_nav else ""
+            text_part = f'  "{text}"' if text else ""
+            formatted_links.append(f"  {i}: {href}{text_part}{nav_note}")
+        else:
+            formatted_links.append(f"  {i}: {link}")
+
+    numbered_links = "\n".join(formatted_links)
 
     return f"""
 You are an expert web structure analyzer.
@@ -408,60 +445,62 @@ You are an expert web structure analyzer.
 You are analyzing a catalog page to determine if it contains NESTED content that should be explored further.
 
 NESTING EXAMPLES:
-- A "Categories" page linking to individual category pages (each with their own item lists)
-- A "Departments" page linking to sub-departments
-- A product listing linking to product detail pages
-- An index page linking to sub-sections
+- A product listing where each item links to a product detail page
+- A film index where each title links to a film detail page
+- A directory page where each entry links to a full record page
 
 YOUR TASK:
-1. Determine if this is a FINAL DETAIL PAGE (no further meaningful nesting) or an INTERMEDIATE PAGE (links to deeper content)
-2. If intermediate, identify the BEST link to follow to reach the actual item details
-3. If intermediate, identify the CSS selector pattern to find ALL similar drill-down links
+1. Determine if this is a FINAL DETAIL PAGE (no further meaningful nesting) or an INTERMEDIATE PAGE (links lead to richer item detail)
+2. If intermediate, rank the best candidate links to follow to reach item details
+3. If intermediate, identify the CSS selector to find ALL similar drill-down links on the page
 
 A page is a FINAL DETAIL PAGE if:
-- It shows individual item details (product specs, article content, movie info, etc.)
-- The links mostly lead to unrelated pages, navigation, or external sites
-- There's no clear "drill down" pattern
+- It shows the full details of a single item (specs, synopsis, article body, etc.)
+- Links mostly lead to unrelated pages, navigation, or external sites
 
 A page is an INTERMEDIATE PAGE if:
-- Items are categories, sections, or groups that contain more items
-- Links clearly lead to more specific content within the same domain
-- There's a hierarchical structure to explore
+- It is a list/grid of items and clicking an item leads to a richer detail page
+- There is a clear repeating link pattern pointing deeper into the same site
 
 CURRENT PAGE INFO:
 URL: {url}
+Root path: {root_path}
 Title: {dom_summary.get("title")}
 Detected catalog type: {schema.get("catalog_type")}
 Item name: {schema.get("item_schema", {}).get("item_name", "unknown")}
 Item container selector: {schema.get("item_schema", {}).get("item_container_selector", "unknown")}
 
-Common CSS classes on this page:
-{dom_summary.get("common_classes")}
+LINK SELECTION RULES — follow these strictly:
+1. IGNORE any link marked "⚠ navigation" — those are site nav, not catalog items.
+2. PREFER links whose path STARTS WITH "{root_path}/" — these are children of the current page and most likely to be item detail pages.
+3. Among child links, prefer those whose anchor text looks like a specific item name (film title, product name, article headline) rather than a generic section label (Home, About, Selection, Contact).
+4. A link that goes to a sibling section (same depth, different branch, e.g. /en/selection/ from /en/program/) is almost certainly NOT the right drill target.
 
-Available links on this page (INDEX: URL):
+Available links (INDEX: URL  "anchor text"  [nav flag]):
 {numbered_links}
 
-Output STRICT JSON:
+Output STRICT JSON — no markdown, no commentary:
 {{
   "is_final_level": true | false,
-  "reasoning": "why this is/isn't the final level",
-  "recommended_link_index": null | <index number from the list above>,
-  "recommended_link_reason": "why this link is the best choice to explore deeper",
-  "drill_down_link_selector": "CSS selector to find ALL drill-down links within item containers, or null if final level"
+  "reasoning": "concise explanation",
+  "recommended_link_index": null | <integer index from the list above>,
+  "recommended_link_reason": "why this is the best drill-down candidate",
+  "drill_down_link_selector": "CSS selector (relative to item container) to find ALL drill-down links, or null if final level",
+  "ranked_candidates": [
+    {{
+      "link_index": <integer index>,
+      "label": "<anchor text if available, else last URL path segment cleaned up>",
+      "reason": "<one sentence why this leads to item detail>",
+      "confidence": <0.0-1.0>
+    }}
+  ]
 }}
 
-SELECTOR GUIDELINES:
-- drill_down_link_selector should be relative to the item container (e.g., "a.item-link", "a[href]", ".title a")
-- This selector will be used to find the link to follow for EACH item in the catalog
-- If is_final_level is true, set drill_down_link_selector to null
-
-IMPORTANT: recommended_link_index must be the exact index number from the list above (0, 1, 2, etc.)
-
-If is_final_level is true, set recommended_link_index to null.
-If is_final_level is false, you MUST provide a valid index number from the list.
-
-DO NOT include markdown.
-DO NOT include extra commentary.
+For ranked_candidates:
+- List up to 8 candidates, ordered from most to least likely to be item detail links.
+- Exclude links marked "⚠ navigation".
+- If is_final_level is true, return an empty array for ranked_candidates.
+- recommended_link_index must equal ranked_candidates[0].link_index.
 """
 
 
@@ -753,6 +792,8 @@ def apply_schema_edits(plan: CatalogPlan, edits: list[dict]) -> CatalogPlan:
     """
     Apply edits to a CatalogPlan's schema.
 
+    Edits are applied directly to schema_chain[level].fields.
+
     Args:
         plan: The plan to edit
         edits: List of edit operations
@@ -763,79 +804,38 @@ def apply_schema_edits(plan: CatalogPlan, edits: list[dict]) -> CatalogPlan:
     Edit operations:
         {"action": "rename", "field": "old_name", "new_name": "new_name", "level": 0}
         {"action": "delete", "field": "field_name", "level": 0}
-        {"action": "update", "field": "field_name", "type": "string", "required": True, ...}
-        {"action": "add", "name": "field_name", "type": "string", ...}
-
-    When "level" is provided (schema_chain index), edits are applied to both
-    schema_chain[level].fields and the corresponding merged field in plan.fields.
+        {"action": "update", "field": "field_name", "level": 0, "type": "string", "required": True, ...}
+        {"action": "add", "name": "field_name", "level": 0, "type": "string", ...}
     """
-    # Work with a copy
     data = plan.to_dict()
-    fields = data.get("fields", [])
     schema_chain = data.get("schema_chain", [])
 
     for edit in edits:
         action = edit.get("action")
-        level = edit.get("level")  # schema_chain index (optional)
+        level = edit.get("level", 0)
 
-        # Resolve the actual level number from schema_chain for matching
-        # against source_level_num in merged fields.
-        level_num = None
-        if level is not None and 0 <= level < len(schema_chain):
-            level_num = schema_chain[level].get("level", level + 1)
+        if level is None or level < 0 or level >= len(schema_chain):
+            continue
+
+        level_fields = schema_chain[level].get("fields", [])
 
         if action == "rename":
             old_name = edit.get("field")
             new_name = edit.get("new_name")
-
-            # Update in schema_chain
-            if level is not None and 0 <= level < len(schema_chain):
-                for f in schema_chain[level].get("fields", []):
-                    if f.get("name") == old_name:
-                        f["name"] = new_name
-                        break
-
-            # Update in merged fields
-            if level_num is not None:
-                for f in fields:
-                    if f.get("original_name") == old_name and f.get("source_level_num") == level_num:
-                        f["original_name"] = new_name
-                        current_name = f.get("name", "")
-                        if current_name.endswith(f"_{old_name}"):
-                            prefix = current_name[: -len(old_name)]
-                            f["name"] = f"{prefix}{new_name}"
-                        else:
-                            f["name"] = new_name
-                        break
-            else:
-                for f in fields:
-                    if f.get("name") == old_name:
-                        f["name"] = new_name
-                        break
+            for f in level_fields:
+                if f.get("name") == old_name:
+                    f["name"] = new_name
+                    break
 
         elif action == "delete":
             field_name = edit.get("field")
-
-            # Delete from schema_chain
-            if level is not None and 0 <= level < len(schema_chain):
-                level_fields = schema_chain[level].get("fields", [])
-                schema_chain[level]["fields"] = [
-                    f for f in level_fields if f.get("name") != field_name
-                ]
-
-            # Delete from merged fields
-            if level_num is not None:
-                fields = [
-                    f for f in fields
-                    if not (f.get("original_name") == field_name and f.get("source_level_num") == level_num)
-                ]
-            else:
-                fields = [f for f in fields if f.get("name") != field_name]
-            data["fields"] = fields
+            schema_chain[level]["fields"] = [
+                f for f in level_fields if f.get("name") != field_name
+            ]
 
         elif action == "update":
             field_name = edit.get("field")
-            for f in fields:
+            for f in level_fields:
                 if f.get("name") == field_name:
                     for key, value in edit.items():
                         if key not in ("action", "field", "level"):
@@ -852,9 +852,8 @@ def apply_schema_edits(plan: CatalogPlan, edits: list[dict]) -> CatalogPlan:
                 "selector": edit.get("selector"),
                 "attribute": edit.get("attribute", "text"),
             }
-            fields.append(new_field)
+            level_fields.append(new_field)
 
-    data["fields"] = fields
     data["schema_chain"] = schema_chain
     return CatalogPlan.from_dict(data)
 
@@ -874,17 +873,16 @@ def validate_schema(plan: CatalogPlan) -> list[str]:
     if not plan.root_url:
         warnings.append("Missing root URL")
 
-    if not plan.fields:
+    # Collect all fields from schema_chain
+    all_fields = []
+    for level in plan.schema_chain:
+        all_fields.extend(level.fields)
+
+    if not all_fields:
         warnings.append("No fields defined")
 
-    # Check for duplicate field names
-    field_names = [f.name for f in plan.fields]
-    duplicates = [name for name in field_names if field_names.count(name) > 1]
-    if duplicates:
-        warnings.append(f"Duplicate field names: {', '.join(set(duplicates))}")
-
     # Check for fields without selectors
-    fields_without_selectors = [f.name for f in plan.fields if not f.selector]
+    fields_without_selectors = [f.name for f in all_fields if not f.selector]
     if fields_without_selectors:
         warnings.append(
             f"Fields without selectors: {', '.join(fields_without_selectors)}"
@@ -892,7 +890,7 @@ def validate_schema(plan: CatalogPlan) -> list[str]:
 
     # Check for required fields without selectors
     required_without_selectors = [
-        f.name for f in plan.fields if f.required and not f.selector
+        f.name for f in all_fields if f.required and not f.selector
     ]
     if required_without_selectors:
         warnings.append(
@@ -902,131 +900,3 @@ def validate_schema(plan: CatalogPlan) -> list[str]:
     return warnings
 
 
-# -------------------------
-# Schema Merging
-# -------------------------
-
-
-def _normalize_level_name(name: str) -> str:
-    """Convert a level name to a valid field prefix (snake_case)."""
-    if not name:
-        return "level"
-    normalized = name.lower()
-    normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
-    normalized = normalized.strip("_")
-    return normalized or "level"
-
-
-def merge_schemas(schema_chain: list[dict], on_progress=None) -> dict:
-    """
-    Merge schemas from all nesting levels into a single unified schema.
-
-    Fields with the same name but from different levels are kept separate
-    with level-prefixed names.
-
-    Args:
-        schema_chain: List of dicts with 'level', 'url', 'schema' keys
-        on_progress: Optional callback(step, detail) for progress reporting
-
-    Returns:
-        Merged schema dict with item_name, nesting_depth, fields, level_names
-    """
-    if on_progress:
-        on_progress("Merging schemas from all levels", "")
-
-    if not schema_chain:
-        return {}
-
-    # First pass: collect all fields with their level info
-    all_fields = []
-    for level_info in schema_chain:
-        level_num = level_info["level"]
-        schema = level_info["schema"]
-        level_name = schema.get("catalog_type") or f"level_{level_num}"
-
-        item_schema = schema.get("item_schema") or {}
-        fields = item_schema.get("fields") or []
-
-        for field in fields:
-            all_fields.append(
-                {"field": field, "level_num": level_num, "level_name": level_name}
-            )
-
-    # Second pass: identify which field names appear at multiple levels
-    field_occurrences = {}
-    for entry in all_fields:
-        field = entry["field"]
-        field_name = field.get("name")
-        level_num = entry["level_num"]
-        level_name = entry["level_name"]
-        description = field.get("description", "")
-
-        if field_name not in field_occurrences:
-            field_occurrences[field_name] = []
-
-        level_exists = any(
-            occ["level_num"] == level_num for occ in field_occurrences[field_name]
-        )
-        if not level_exists:
-            field_occurrences[field_name].append(
-                {"level_num": level_num, "level_name": level_name, "description": description}
-            )
-
-    # Identify fields that need prefixing
-    fields_needing_prefix = {
-        name for name, occurrences in field_occurrences.items() if len(occurrences) > 1
-    }
-
-    # Third pass: build merged fields with appropriate naming
-    merged_fields = []
-    seen_field_names = set()
-
-    for entry in reversed(all_fields):
-        field = entry["field"]
-        level_num = entry["level_num"]
-        level_name = entry["level_name"]
-        field_name = field.get("name")
-
-        if field_name in seen_field_names:
-            continue
-        seen_field_names.add(field_name)
-
-        if field_name in fields_needing_prefix:
-            occurrences = field_occurrences[field_name]
-            level_names_unique = len(set(occ["level_name"] for occ in occurrences))
-            if level_names_unique < len(occurrences):
-                prefix = f"level_{level_num}"
-            else:
-                prefix = _normalize_level_name(level_name)
-            final_name = f"{prefix}_{field_name}"
-        else:
-            final_name = field_name
-
-        merged_field = field.copy()
-        merged_field["name"] = final_name
-        merged_field["original_name"] = field_name
-        merged_field["source_level"] = level_name
-        merged_field["source_level_num"] = level_num
-        merged_fields.append(merged_field)
-
-    merged_fields.reverse()
-
-    final_level = schema_chain[-1]
-    final_item_schema = final_level["schema"].get("item_schema") or {}
-    final_item_name = final_item_schema.get("item_name") or "Item"
-
-    if on_progress:
-        on_progress("Schema merge complete", f"{len(merged_fields)} unique fields")
-
-    # Build level_names, ensuring no None values
-    level_names = []
-    for s in schema_chain:
-        catalog_type = s["schema"].get("catalog_type")
-        level_names.append(catalog_type if catalog_type else f"level_{s['level']}")
-
-    return {
-        "item_name": final_item_name,
-        "nesting_depth": len(schema_chain),
-        "fields": merged_fields,
-        "level_names": level_names,
-    }

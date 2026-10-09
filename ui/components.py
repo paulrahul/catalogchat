@@ -17,16 +17,9 @@ from typing import Any, Optional
 def render_header():
     """Render the main application header."""
     st.markdown("""
-        <div style="
-            background: #ADC4CE;
-            padding: 1.5rem 2rem;
-            border-radius: 12px;
-            margin-bottom: 1.5rem;
-            text-align: center;
-            border: 1px solid #8BAAB6;
-        ">
-            <h1 style="margin: 0; font-size: 2.2rem; font-weight: 700; color: #3A4A50;">CatalogChat</h1>
-            <p style="margin: 0.3rem 0 0; color: #5A6A70; font-size: 1rem;">Turn any website's catalog into structured data</p>
+        <div class="main-header">
+            <h1>CatalogChat</h1>
+            <p>Web catalog &rarr; structured data</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -173,7 +166,7 @@ def render_field_cards(fields: list[dict], show_advanced: bool = False):
             sel_display = selector[:50] + "..." if len(selector) > 50 else selector
             sel_display = sel_display.replace("<", "&lt;").replace(">", "&gt;")
             advanced_html = (
-                f'<div style="margin-top:0.4rem;font-size:0.75rem;color:#7A8A90;font-family:monospace;">'
+                f'<div style="margin-top:0.4rem;font-size:0.75rem;color:var(--color-text-muted);font-family:monospace;">'
                 f'{sel_display} &rarr; {attribute}'
             )
             if container:
@@ -256,7 +249,7 @@ def render_editable_field_row(level: int, field: dict, show_advanced: bool = Fal
                     .replace('"', "&quot;")
                 )
                 sample_html = (
-                    f' <span style="color:#7A8A90;font-style:italic;'
+                    f' <span style="color:var(--color-text-muted);font-style:italic;'
                     f'font-size:0.85rem;">&mdash; "{display_sample}"</span>'
                 )
             name_html = field_name.replace("<", "&lt;").replace(">", "&gt;")
@@ -269,11 +262,11 @@ def render_editable_field_row(level: int, field: dict, show_advanced: bool = Fal
                 )
                 sel_display = sel_display.replace("<", "&lt;").replace(">", "&gt;")
                 advanced_html = (
-                    f'<br/><span style="font-size:0.75rem;color:#7A8A90;'
+                    f'<br/><span style="font-size:0.75rem;color:var(--color-text-muted);'
                     f'font-family:monospace;">{sel_display} &rarr; {attribute}</span>'
                 )
             st.markdown(
-                f'<span style="font-weight:600;">{name_html}</span>'
+                f'<span style="font-family:var(--font-heading);font-weight:500;">{name_html}</span>'
                 f'{sample_html}'
                 f' <span class="field-card-type">{field_type}</span>'
                 f'{advanced_html}',
@@ -348,7 +341,16 @@ def render_extraction_plan(extraction_plan: dict, show_advanced: bool = False):
     """Render the extraction plan with navigation paths."""
     summary = extraction_plan.get("summary", {})
     navigation_path = extraction_plan.get("navigation_path", [])
-    final_fields = extraction_plan.get("final_field_names", [])
+
+    # Build field list from navigation_path levels
+    final_fields = []
+    seen = set()
+    for level in navigation_path:
+        for f in level.get("fields", []):
+            name = f.get("name", "")
+            if name and name not in seen:
+                final_fields.append(name)
+                seen.add(name)
 
     # Summary
     if summary:
@@ -468,7 +470,12 @@ def render_discovery_trail(history: list[dict], current_level: int, current_url:
         parts.append(f'<span class="nav-trail-level">{name}</span>')
         parts.append('<span class="nav-trail-arrow">→</span>')
 
-    parts.append(f'<span class="nav-trail-current">Level {current_level} (analyzing...)</span>')
+    parts.append(
+        f'<span class="nav-trail-current">'
+        f'<span class="depth-dot current" style="width:8px;height:8px;display:inline-block;vertical-align:middle;margin-right:0.3rem;"></span>'
+        f'Level {current_level}'
+        f'</span>'
+    )
 
     st.markdown(
         '<div class="nav-trail">' + " ".join(parts) + '</div>',
@@ -479,31 +486,6 @@ def render_discovery_trail(history: list[dict], current_level: int, current_url:
 # =============================================================================
 # Utility Components
 # =============================================================================
-
-def render_progress_steps(current_step: int, steps: list[dict]):
-    """Render progress steps indicator."""
-    st.markdown('<div class="progress-container">', unsafe_allow_html=True)
-
-    for i, step in enumerate(steps):
-        if i < current_step:
-            status = "complete"
-            icon = "✓"
-        elif i == current_step:
-            status = "active"
-            icon = str(i + 1)
-        else:
-            status = "pending"
-            icon = str(i + 1)
-
-        st.markdown(f"""
-            <div class="progress-step {status}">
-                <span class="step-number {status}">{icon}</span>
-                <span>{step['name']}</span>
-            </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
 
 def render_info_box(message: str, box_type: str = "info"):
     """Render a styled info/warning/error box."""

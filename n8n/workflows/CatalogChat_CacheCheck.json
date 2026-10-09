@@ -1,27 +1,44 @@
 {
+  "id": "__zfsTnc0fsbupnOJquWy",
   "name": "CatalogChat: CacheCheck",
   "nodes": [
     {
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "bef9275b-b5a3-4642-9c4d-3cf0def3e6f0",
       "parameters": {
         "httpMethod": "POST",
         "path": "catalogchat/start",
         "responseMode": "responseNode",
-        "options": {}
+        "options": {
+          "allowedOrigins": "*"
+        }
       },
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2.1,
+      "id": "5cff6ca0-fab6-4be3-81cf-bd864a8a3cc0",
       "position": [
-        -1680,
-        -544
-      ],
-      "id": "b572e9bb-7b3b-44b2-8169-1d1005c511ae",
-      "name": "Webhook",
-      "webhookId": "d0ac569d-973a-45e1-86be-90a8fd2d27ba",
-      "alwaysOutputData": false
+        0,
+        0
+      ]
     },
     {
+      "name": "Fetch saved plan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "onError": "continueErrorOutput",
       "parameters": {
+        "method": "GET",
         "url": "http://127.0.0.1:8080/plan",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        },
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
@@ -30,37 +47,18 @@
               "value": "={{ $json.body.url }}"
             }
           ]
-        },
-        "options": {}
+        }
       },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.3,
+      "id": "f9c6a2b2-27d5-4944-a7d2-3cee4bd5a168",
       "position": [
-        -1440,
-        -544
-      ],
-      "id": "f4b1e196-bae0-445b-b7bb-6e5b67af5473",
-      "name": "Fetch URL plan",
-      "onError": "continueRegularOutput"
+        220,
+        0
+      ]
     },
     {
-      "parameters": {
-        "resume": "webhook",
-        "httpMethod": "POST",
-        "responseMode": "responseNode",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        -768,
-        -800
-      ],
-      "id": "12c1746b-bf4d-4529-bbc3-58b7f066d79d",
-      "name": "Wait",
-      "webhookId": "f0254d49-1b77-4291-a24d-92307c80c9d4"
-    },
-    {
+      "name": "Has usable plan?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
       "parameters": {
         "conditions": {
           "options": {
@@ -71,8 +69,8 @@
           },
           "conditions": [
             {
-              "id": "700d787d-3a08-4881-b5b6-79aa116b1ab3",
-              "leftValue": "={{ $json.error == null && $json.plan != null }}",
+              "id": "7a56018b-9888-4f72-b6f4-d3bfd4b55d05",
+              "leftValue": "={{ Boolean($json.statusCode < 400 && ($json.body.plan?.schema_chain || []).length > 0) }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -85,119 +83,154 @@
         },
         "options": {}
       },
+      "id": "f10a26e7-53a5-44ca-9770-5bc3654b2a2a",
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "name": "Ask to reuse plan",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'decision_required', id: 'reuse_existing_plan', step: 'plan_check', url: $('Webhook').item.json.body.url, question: 'A saved plan exists for this URL. Reuse it or discover the route again?', options: ['reuse', 'rediscover'], context: { plan: $json.body.plan } } }}",
+        "options": {}
+      },
+      "id": "04db7ad0-5b85-4e6c-808a-240882fcfae0",
+      "position": [
+        700,
+        -120
+      ]
+    },
+    {
+      "name": "Not found or empty?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [
-        -1232,
-        -544
-      ],
-      "id": "af61bc09-7990-4694-8608-37e486659bcf",
-      "name": "Does URL plan already exist?"
-    },
-    {
       "parameters": {
-        "respondWith": "json",
-        "responseBody": "= {\n\"type\":\"decision_required\",\n\"subtype\": \"yn\",\n\"id\":\"reuse_existing_plan\",\n\"question\": \"An existing plan was found for this URL. Do you want to reuse it?\",\n\"url\": \"{{$json.url}}\",\n\"plan_summary\": \"{{$json.plan}}\", \"resume_url\": \"{{$execution.resumeUrl}}\" \n}",
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "78e7e356-8cde-4644-88f8-99aea4d38d83",
+              "leftValue": "={{ Boolean($json.statusCode === 404 || $json.statusCode < 400) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
         "options": {}
       },
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.5,
+      "id": "a251905f-0f62-4413-8df8-2809ad9333e4",
       "position": [
-        -992,
-        -704
-      ],
-      "id": "bbdf254a-bf1c-48d1-ad59-cd55e3d83052",
-      "name": "Ask user if plan should be reused"
+        700,
+        80
+      ]
     },
     {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "{ \"type\": \"decision\", \"id\": \"next_step\", \"step\": \"scrape\" }",
-        "options": {}
-      },
+      "name": "Go to discovery",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'next', step: 'discover', url: $('Webhook').item.json.body.url } }}",
+        "options": {}
+      },
+      "id": "4a3fdc63-5740-42b0-92ac-401118f8aa74",
       "position": [
-        -976,
-        -384
-      ],
-      "id": "b1504a92-d6f6-45d5-928b-47a1ebd95a5e",
-      "name": "Communicate Scrape step to user"
+        940,
+        0
+      ]
     },
     {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={\n  \"type\": \"decision\",\n  \"id\": \"next_step\",\n  \"step\": \"{{ $json.body.decision.action === 'yes' ? 'scrape' : 'discover' }}\"\n}",
-        "options": {}
-      },
+      "name": "Respond with error",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'error', step: 'plan_check', url: $('Webhook').item.json.body.url, message: typeof $json.body?.detail === 'string' ? $json.body.detail : $json.body?.detail ? JSON.stringify($json.body.detail) : ($json.error?.message || $json.message || 'Could not reach the CatalogChat API at http://127.0.0.1:8080') } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "593dcbe0-91c2-43b6-a1b7-eb228f0cee2b",
       "position": [
-        -560,
-        -800
-      ],
-      "id": "06a115e0-9b8a-43eb-ad6e-6254f0682642",
-      "name": "Communicate next step to user"
+        940,
+        200
+      ]
     }
   ],
-  "pinData": {},
   "connections": {
     "Webhook": {
       "main": [
         [
           {
-            "node": "Fetch URL plan",
+            "node": "Fetch saved plan",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Fetch URL plan": {
+    "Fetch saved plan": {
       "main": [
         [
           {
-            "node": "Does URL plan already exist?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait": {
-      "main": [
-        [
-          {
-            "node": "Communicate next step to user",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Does URL plan already exist?": {
-      "main": [
-        [
-          {
-            "node": "Ask user if plan should be reused",
+            "node": "Has usable plan?",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Communicate Scrape step to user",
+            "node": "Respond with error",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Ask user if plan should be reused": {
+    "Has usable plan?": {
       "main": [
         [
           {
-            "node": "Wait",
+            "node": "Ask to reuse plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not found or empty?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not found or empty?": {
+      "main": [
+        [
+          {
+            "node": "Go to discovery",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
             "type": "main",
             "index": 0
           }
@@ -207,14 +240,8 @@
   },
   "active": false,
   "settings": {
-    "executionOrder": "v1",
-    "availableInMCP": false
+    "executionOrder": "v1"
   },
-  "versionId": "eda76ba1-69ff-4242-b9ec-69b2345f9e71",
-  "meta": {
-    "templateCredsSetupCompleted": true,
-    "instanceId": "686dc357b66680024b550737da7203908475780e37c8d7bf49ff871b9fae6b99"
-  },
-  "id": "__zfsTnc0fsbupnOJquWy",
+  "pinData": {},
   "tags": []
 }

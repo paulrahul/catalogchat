@@ -130,9 +130,6 @@ class Field:
     container_selector: str | None = None
     selector: str | None = None
     attribute: str = "text"
-    original_name: str | None = None
-    source_level: str | None = None
-    source_level_num: int | None = None
     sample_value: str | None = None
 
     def to_dict(self) -> dict:
@@ -144,9 +141,6 @@ class Field:
             "container_selector": self.container_selector,
             "selector": self.selector,
             "attribute": self.attribute,
-            "original_name": self.original_name,
-            "source_level": self.source_level,
-            "source_level_num": self.source_level_num,
             "sample_value": self.sample_value,
         }
 
@@ -160,9 +154,6 @@ class Field:
             container_selector=data.get("container_selector"),
             selector=data.get("selector"),
             attribute=data.get("attribute", "text"),
-            original_name=data.get("original_name"),
-            source_level=data.get("source_level"),
-            source_level_num=data.get("source_level_num"),
             sample_value=data.get("sample_value"),
         )
 
@@ -272,7 +263,6 @@ class CatalogPlan:
     item_name: str = "Item"
     nesting_depth: int = 1
     level_names: list[str] = field(default_factory=list)
-    fields: list[Field] = field(default_factory=list)
     schema_chain: list[LevelSchema] = field(default_factory=list)
     visited_urls: list[str] = field(default_factory=list)
     created_at: str | None = None
@@ -285,7 +275,6 @@ class CatalogPlan:
             "item_name": self.item_name,
             "nesting_depth": self.nesting_depth,
             "level_names": self.level_names,
-            "fields": [f.to_dict() for f in self.fields],
             "schema_chain": [s.to_dict() for s in self.schema_chain],
             "visited_urls": self.visited_urls,
             "created_at": self.created_at,
@@ -300,7 +289,6 @@ class CatalogPlan:
             item_name=data.get("item_name", "Item"),
             nesting_depth=data.get("nesting_depth", 1),
             level_names=data.get("level_names", []),
-            fields=[Field.from_dict(f) for f in data.get("fields", [])],
             schema_chain=[LevelSchema.from_dict(s) for s in data.get("schema_chain", [])],
             visited_urls=data.get("visited_urls", []),
             created_at=data.get("created_at"),
@@ -327,6 +315,7 @@ class DiscoveryState:
     _current_dom_summary: dict | None = field(default=None, repr=False)
     _current_schema: dict | None = field(default=None, repr=False)
     _unvisited_links: list[str] = field(default_factory=list, repr=False)
+    _link_labels: dict[str, str] = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> dict:
         return {
@@ -361,8 +350,6 @@ class ExtractionPlan:
     root_url: str
     navigation_path: list[LevelPlan] = field(default_factory=list)
     fields: list[Field] = field(default_factory=list)
-    field_name_mapping: dict[str, str] = field(default_factory=dict)
-    final_field_names: list[str] = field(default_factory=list)
     summary: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -370,8 +357,6 @@ class ExtractionPlan:
             "root_url": self.root_url,
             "navigation_path": [lp.to_dict() for lp in self.navigation_path],
             "fields": [f.to_dict() for f in self.fields],
-            "field_name_mapping": self.field_name_mapping,
-            "final_field_names": self.final_field_names,
             "summary": self.summary,
         }
 
@@ -381,8 +366,6 @@ class ExtractionPlan:
             root_url=data.get("root_url", ""),
             navigation_path=[LevelPlan.from_dict(lp) for lp in data.get("navigation_path", [])],
             fields=[Field.from_dict(f) for f in data.get("fields", [])],
-            field_name_mapping=data.get("field_name_mapping", {}),
-            final_field_names=data.get("final_field_names", []),
             summary=data.get("summary", {}),
         )
 

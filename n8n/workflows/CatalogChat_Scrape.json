@@ -1,0 +1,174 @@
+{
+  "id": "ccFullScrape0001",
+  "name": "CatalogChat: Scrape",
+  "nodes": [
+    {
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "webhookId": "079314bb-6b17-4884-91c1-a38d72dcfdaf",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "catalogchat/scrape",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "11bd6d19-5de4-4247-83da-19b68959e1f3",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Scrape all",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8080/plan/scrape",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 3600000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.body.url, max_rows: $json.body.max_rows || null }) }}"
+      },
+      "id": "25147c7a-5b3b-49fd-8903-472b4e78b672",
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "name": "API ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "476e94ec-e17f-4fb7-a8d4-d753370d97b5",
+              "leftValue": "={{ Boolean($json.statusCode < 400) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dd7f9cec-9ac3-4000-8920-e4c303814be7",
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "name": "Respond with error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'error', step: 'extract', url: $('Webhook').item.json.body.url, message: typeof $json.body?.detail === 'string' ? $json.body.detail : $json.body?.detail ? JSON.stringify($json.body.detail) : ($json.error?.message || $json.message || 'Could not reach the CatalogChat API at http://127.0.0.1:8080') } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "89f86d1a-4eac-4aa8-9b48-f2ee9a9838f1",
+      "position": [
+        660,
+        220
+      ]
+    },
+    {
+      "name": "Respond with rows",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { type: 'result', id: 'rows', step: 'extract', url: $('Webhook').item.json.body.url, rows: $json.body.rows || [], count: $json.body.count || 0 } }}",
+        "options": {}
+      },
+      "id": "f42b5ef1-bc60-4696-8d8f-f1826596e0cc",
+      "position": [
+        660,
+        -100
+      ]
+    }
+  ],
+  "connections": {
+    "Scrape all": {
+      "main": [
+        [
+          {
+            "node": "API ok?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API ok?": {
+      "main": [
+        [
+          {
+            "node": "Respond with rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond with error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Scrape all",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

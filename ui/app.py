@@ -24,10 +24,10 @@ from components import (
 
 # Page configuration
 st.set_page_config(
-    page_title="CatalogChat",
+    page_title="CheapTalk",
     page_icon="📋",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # Inject custom CSS
@@ -50,7 +50,7 @@ def init_session_state():
         "url": "",
         "mode": "auto",
         "model": "gpt-4o-mini",
-        "api_base_url": "http://localhost:8000",
+        "api_base_url": "http://localhost:8080",
         "discovery_response": None,
         "plan": None,
         "extraction_plan": None,
@@ -118,12 +118,11 @@ def render_configuration_step():
         return
 
     st.markdown(
-        '<div class="wizard-question">Which website\'s catalog would you like to scrape?</div>',
+        '<div class="wizard-question">Paste your catalog URL</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="wizard-hint">Paste the URL of a page that lists the items you want to extract '
-        '(e.g. a product listing, directory, or search results page).</div>',
+        '<div class="wizard-hint">Product listing, directory, or search results page</div>',
         unsafe_allow_html=True,
     )
 
@@ -162,12 +161,12 @@ def render_configuration_step():
                 else 0,
             )
 
-        with st.expander("Advanced Settings"):
-            api_base = st.text_input(
-                "API Base URL",
-                value=st.session_state.api_base_url,
-                help="Backend API URL",
-            )
+        # with st.expander("Advanced Settings"):
+        #     api_base = st.text_input(
+        #         "API Base URL",
+        #         value=st.session_state.api_base_url,
+        #         help="Backend API URL",
+        #     )
 
         submitted = st.form_submit_button(
             "Start Discovery", type="primary", use_container_width=True
@@ -180,7 +179,7 @@ def render_configuration_step():
                 st.session_state.url = url
                 st.session_state.mode = mode
                 st.session_state.model = model
-                st.session_state.api_base_url = api_base
+                st.session_state.api_base_url = st.session_state.api_base_url
 
                 try:
                     api = get_api_client()
@@ -200,42 +199,42 @@ def render_configuration_step():
 def render_plan_exists_dialog():
     """Render dialog when a plan already exists for the URL."""
     st.markdown(
-        '<div class="wizard-question">We already have a navigation plan for this URL</div>',
+        '<div class="wizard-question">Existing plan found</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="wizard-hint">Would you like to reuse the existing plan or discover a fresh route?</div>',
+        '<div class="wizard-hint">Reuse the saved plan or start fresh?</div>',
         unsafe_allow_html=True,
     )
 
     cached_plan = st.session_state.get("cached_plan", {})
     schema_chain = cached_plan.get("schema_chain", [])
 
-    # Show summary of existing plan
-    if schema_chain:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Levels", len(schema_chain))
-        with col2:
-            total_fields = sum(
-                len(level.get("fields", [])) for level in schema_chain
-            )
-            st.metric("Fields", total_fields)
+    # # Show summary of existing plan
+    # if schema_chain:
+    #     col1, col2 = st.columns(2)
+    #     with col1:
+    #         st.metric("Levels", len(schema_chain))
+    #     with col2:
+    #         total_fields = sum(
+    #             len(level.get("fields", [])) for level in schema_chain
+    #         )
+    #         st.metric("Fields", total_fields)
 
-        # Show field names as a quick preview
-        all_field_names = []
-        for level in schema_chain:
-            for f in level.get("fields", []):
-                name = f.get("name", "")
-                if name and name not in all_field_names:
-                    all_field_names.append(name)
-        if all_field_names:
-            st.markdown(
-                "**Fields:** " + ", ".join(f"`{n}`" for n in all_field_names[:12])
-                + (f" *and {len(all_field_names) - 12} more*" if len(all_field_names) > 12 else "")
-            )
+    #     # Show field names as a quick preview
+    #     all_field_names = []
+    #     for level in schema_chain:
+    #         for f in level.get("fields", []):
+    #             name = f.get("name", "")
+    #             if name and name not in all_field_names:
+    #                 all_field_names.append(name)
+    #     if all_field_names:
+    #         st.markdown(
+    #             "**Fields:** " + ", ".join(f"`{n}`" for n in all_field_names[:12])
+    #             + (f" *and {len(all_field_names) - 12} more*" if len(all_field_names) > 12 else "")
+    #         )
 
-    st.markdown("")
+    # st.markdown("")
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -275,13 +274,11 @@ def render_plan_exists_dialog():
 def render_discovery_step():
     """Render the discovery step with page preview and friendly prompts."""
     st.markdown(
-        '<div class="wizard-question">Discovering the catalog\'s navigation route</div>',
+        '<div class="wizard-question">Discovering navigation route</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="wizard-hint">'
-        "We'll analyze each page level to understand how the catalog is structured."
-        "</div>",
+        '<div class="wizard-hint">Analyzing page structure level by level</div>',
         unsafe_allow_html=True,
     )
 
@@ -328,15 +325,32 @@ def render_discovery_step():
     current_url = response.state.current_url if response.state else url
     render_discovery_trail(history, current_level, current_url)
 
-    # Show current state metrics
+    # Visual depth indicator
     if response.state:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Current Level", response.state.current_level)
-        with col2:
-            st.metric("Pages Visited", len(response.state.visited_urls))
-        with col3:
-            st.metric("Status", "Analyzing...")
+        level = response.state.current_level
+        max_dots = max(level + 2, 5)  # show a few empty dots ahead
+        dots_html = []
+        for i in range(1, max_dots + 1):
+            if i < level:
+                dots_html.append('<span class="depth-dot filled"></span>')
+                if i < max_dots:
+                    dots_html.append('<span class="depth-connector filled"></span>')
+            elif i == level:
+                dots_html.append('<span class="depth-dot current"></span>')
+                if i < max_dots:
+                    dots_html.append('<span class="depth-connector"></span>')
+            else:
+                dots_html.append('<span class="depth-dot empty"></span>')
+                if i < max_dots:
+                    dots_html.append('<span class="depth-connector"></span>')
+
+        st.markdown(
+            f'<div class="depth-indicator">'
+            f'<div class="depth-dots">{"".join(dots_html)}</div>'
+            f'<span class="depth-label">Depth {level}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     # Handle pending decision
     if response.decision:
@@ -472,7 +486,7 @@ def _render_discovery_decision(decision, api, url, mode):
 def render_review_step():
     """Render the plan review step with visual field display."""
     st.markdown(
-        '<div class="wizard-question">Here\'s what we\'ll extract</div>',
+        '<div class="wizard-question">Review extraction schema</div>',
         unsafe_allow_html=True,
     )
 
@@ -500,10 +514,9 @@ def render_review_step():
             st.error(f"Failed to update field: {str(e)}")
 
     schema_chain = plan.get("schema_chain", [])
-    merged_fields = plan.get("fields", [])
 
     # Quick summary
-    total_fields = len(merged_fields) if merged_fields else sum(
+    total_fields = sum(
         len(level.get("fields", [])) for level in schema_chain
     )
 
@@ -578,13 +591,11 @@ def render_review_step():
 def render_sample_step():
     """Render the sample data verification step."""
     st.markdown(
-        '<div class="wizard-question">Let\'s verify the data looks right</div>',
+        '<div class="wizard-question">Verify sample data</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="wizard-hint">'
-        "We'll extract a few sample rows so you can check the results before doing a full extraction."
-        "</div>",
+        '<div class="wizard-hint">Quick preview before full extraction</div>',
         unsafe_allow_html=True,
     )
 
@@ -760,13 +771,11 @@ def render_field_fixer():
 def render_extraction_step():
     """Render the full extraction step."""
     st.markdown(
-        '<div class="wizard-question">Ready to extract your data</div>',
+        '<div class="wizard-question">Extract your data</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="wizard-hint">'
-        "Choose how many rows to extract and we'll do the rest."
-        "</div>",
+        '<div class="wizard-hint">Set your row limit and go</div>',
         unsafe_allow_html=True,
     )
 
@@ -873,87 +882,71 @@ def render_extraction_step():
                 st.rerun()
 
 
-def render_clickable_progress_steps():
-    """Render clickable progress steps in the sidebar."""
+def render_horizontal_stepper():
+    """Render a horizontal progress stepper with clickable completed steps."""
     current_step = st.session_state.current_step
+    n = len(WORKFLOW_STEPS)
+
+    # Marker div so CSS can scope stepper-specific button styles
+    st.markdown('<div class="stepper-bar">', unsafe_allow_html=True)
+
+    # Build column layout: [step, connector, step, connector, ..., step]
+    col_spec = []
+    for i in range(n):
+        col_spec.append(1)       # step column
+        if i < n - 1:
+            col_spec.append(0.6) # connector column
+
+    cols = st.columns(col_spec, gap="small")
 
     for i, step in enumerate(WORKFLOW_STEPS):
+        step_col = cols[i * 2]
+
         if i < current_step:
-            if st.button(
-                f"✓ {step['name']}",
-                key=f"nav_step_{i}",
-                use_container_width=True,
-                type="secondary",
-            ):
-                st.session_state.current_step = i
-                st.rerun()
+            # Completed — rendered as HTML with green circle + checkmark
+            with step_col:
+                st.markdown(
+                    f'<div class="stepper-step-inline">'
+                    f'<div class="stepper-circle completed">✓</div>'
+                    f'<span class="stepper-label completed">{step["name"]}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
         elif i == current_step:
-            st.markdown(
-                f"""<div style="
-                    background: #C9B896;
-                    color: #3A4A50;
-                    padding: 0.5rem 1rem;
-                    border-radius: 8px;
-                    margin: 0.25rem 0;
-                    font-weight: 600;
-                    border-left: 4px solid #B0A080;
-                ">{i + 1}. {step['name']}</div>""",
-                unsafe_allow_html=True,
-            )
+            # Active — styled HTML
+            with step_col:
+                st.markdown(
+                    f'<div class="stepper-step-inline">'
+                    f'<div class="stepper-circle active">{i + 1}</div>'
+                    f'<span class="stepper-label active">{step["name"]}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
         else:
-            st.markdown(
-                f"""<div style="
-                    background: #F1F0E8;
-                    color: #7A8A90;
-                    padding: 0.5rem 1rem;
-                    border-radius: 8px;
-                    margin: 0.25rem 0;
-                    border: 1px solid #E0D0B8;
-                ">{i + 1}. {step['name']}</div>""",
-                unsafe_allow_html=True,
-            )
+            # Pending — muted HTML
+            with step_col:
+                st.markdown(
+                    f'<div class="stepper-step-inline">'
+                    f'<div class="stepper-circle pending">{i + 1}</div>'
+                    f'<span class="stepper-label pending">{step["name"]}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
-
-# ============================================================================
-# Sidebar
-# ============================================================================
-def render_sidebar():
-    """Render the sidebar with progress and info."""
-    with st.sidebar:
-        st.markdown("## Progress")
-        render_clickable_progress_steps()
-
-        st.markdown("---")
-
-        if st.session_state.url:
-            st.markdown("### Session")
-            display_url = (
-                st.session_state.url[:40] + "..."
-                if len(st.session_state.url) > 40
-                else st.session_state.url
-            )
-            st.markdown(f"**URL:** `{display_url}`")
-            st.markdown(f"**Mode:** {st.session_state.mode.title()}")
-
-        st.markdown("---")
-
-        if st.button("Reset Session", use_container_width=True):
-            reset_workflow()
-            st.rerun()
-
-        with st.expander("Help"):
-            st.markdown("""
-            **How it works:**
-            1. Enter the URL of a catalog page
-            2. We discover the navigation structure
-            3. Review the fields we'll extract
-            4. Verify with sample data
-            5. Extract the full dataset
-
-            **Modes:**
-            - **Auto**: AI recommends navigation choices
-            - **Manual**: You control each step
-            """)
+        # Connector
+        if i < n - 1:
+            conn_col = cols[i * 2 + 1]
+            if i < current_step - 1:
+                conn_class = "completed"
+            elif i < current_step:
+                conn_class = "active"
+            else:
+                conn_class = "pending"
+            with conn_col:
+                st.markdown(
+                    f'<div class="stepper-connector-inline {conn_class}"></div>',
+                    unsafe_allow_html=True,
+                )
 
 
 # ============================================================================
@@ -964,7 +957,7 @@ def main():
     init_session_state()
 
     render_header()
-    render_sidebar()
+    render_horizontal_stepper()
 
     if st.session_state.error:
         st.error(st.session_state.error)

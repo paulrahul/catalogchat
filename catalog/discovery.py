@@ -19,14 +19,14 @@ from catalog.types import (
     DecisionType,
     DecisionId,
     DecisionStep,
-    Field,
     LevelSchema,
+    Field,
 )
 from bs4 import BeautifulSoup
 
 from catalog.extraction import _extract_field_value
-from catalog.schema import summarize_dom, infer_schema, analyze_nesting, merge_schemas
-from catalog.util import fetch_html, get_resolved_links
+from catalog.schema import summarize_dom, infer_schema, analyze_nesting
+from catalog.util import fetch_html, get_resolved_links, resolve_url, is_valid_drill_link, score_drill_link
 from catalog.plan import create_plan
 
 
@@ -152,10 +152,8 @@ def advance_discovery(
         )
         return _add_level_and_finalize(state, on_progress), None
 
-    # Get links for potential drilling
-    link_samples = state._current_dom_summary.get("link_samples", [])
-    resolved_links = get_resolved_links(state.current_url, link_samples)
-    state._unvisited_links = [link for link in resolved_links if link not in state.visited_urls]
+    # Build the candidate link pool, preferring item-scoped links
+    state = _build_link_pool(state, on_progress)
 
     if not state._unvisited_links:
         if on_progress:
@@ -169,11 +167,90 @@ def advance_discovery(
         return _handle_auto_mode(state, on_progress)
 
 
+def _extract_item_links(soup, item_container_sel: str) -> list[dict]:
+    """Extract links from within item containers, returning enriched dicts."""
+    results = []
+    seen: set[str] = set()
+    try:
+        for container in soup.select(item_container_sel):
+            for a in container.find_all("a", href=True):
+                href = a.get("href", "")
+                if not href or href in seen:
+                    continue
+                if href.startswith(("#", "javascript:", "mailto:", "tel:")):
+                    continue
+                seen.add(href)
+                text = a.get_text(strip=True)[:60]
+                results.append({"href": href, "text": text, "in_nav": False})
+    except Exception:
+        pass
+    return results
+
+
+def _url_to_label(url: str) -> str:
+    """Derive a readable label from the last segment of a URL path."""
+    from urllib.parse import urlparse
+    path = urlparse(url).path.rstrip("/")
+    slug = path.rsplit("/", 1)[-1] if "/" in path else path
+    return slug.replace("-", " ").replace("_", " ").title()
+
+
+def _build_link_pool(state: DiscoveryState, on_progress=None) -> DiscoveryState:
+    """
+    Build state._unvisited_links and state._link_labels for the current page.
+
+    Strategy (in priority order):
+    1. Extract links from within item containers (item-scoped) — most precise.
+    2. Fall back to the full-page link_samples from dom_summary.
+    In both cases, resolve to absolute URLs, filter same-domain, deduplicate,
+    sort by URL path-prefix score (child URLs first), and exclude visited URLs.
+    """
+    item_container_sel = (
+        (state._current_schema or {}).get("item_schema") or {}
+    ).get("item_container_selector")
+
+    link_dicts: list[dict] = []
+
+    if item_container_sel and state._current_html:
+        soup = BeautifulSoup(state._current_html, "html.parser")
+        item_link_dicts = _extract_item_links(soup, item_container_sel)
+        if item_link_dicts:
+            if on_progress:
+                on_progress("Item-scoped links", f"{len(item_link_dicts)} found in {item_container_sel}")
+            link_dicts = item_link_dicts
+
+    if not link_dicts:
+        # Fallback: use the full-page link_samples from dom_summary
+        link_dicts = state._current_dom_summary.get("link_samples", [])
+
+    # Resolve, filter, deduplicate
+    resolved: list[str] = get_resolved_links(state.current_url, link_dicts)
+
+    # Build label map: resolved URL -> anchor text
+    link_labels: dict[str, str] = {}
+    for ld in link_dicts:
+        if not isinstance(ld, dict):
+            continue
+        href = ld.get("href", "")
+        text = ld.get("text", "").strip()
+        if href and text:
+            abs_url = resolve_url(state.current_url, href)
+            if abs_url not in link_labels:
+                link_labels[abs_url] = text
+
+    # Sort: child URLs (score 1.0) before sibling paths (score 0.3)
+    resolved.sort(key=lambda u: score_drill_link(state.current_url, u), reverse=True)
+
+    state._unvisited_links = [u for u in resolved if u not in state.visited_urls]
+    state._link_labels = link_labels
+    return state
+
+
 def _handle_manual_mode(
     state: DiscoveryState, on_progress=None
 ) -> tuple[DiscoveryState, Decision | None]:
     """Handle manual mode - ask user what to do."""
-    # Ask user if this is the final level or if they want to drill deeper
+    ranked_candidates = _build_ranked_candidates_from_pool(state)
     decision = Decision(
         id=DecisionId.SELECT_LINK,
         type=DecisionType.SELECT_LINK,
@@ -183,7 +260,8 @@ def _handle_manual_mode(
         context={
             "current_url": state.current_url,
             "current_level": state.current_level,
-            "available_links": state._unvisited_links[:20],  # Limit shown links
+            "available_links": state._unvisited_links[:20],
+            "ranked_candidates": ranked_candidates,
             "schema_summary": {
                 "catalog_type": state._current_schema.get("catalog_type"),
                 "item_name": state._current_schema.get("item_schema", {}).get("item_name"),
@@ -195,33 +273,60 @@ def _handle_manual_mode(
     return state, decision
 
 
+def _build_ranked_candidates_from_pool(state: DiscoveryState) -> list[dict]:
+    """Build ranked_candidates from the current scored link pool (no LLM call)."""
+    candidates = []
+    for url in state._unvisited_links[:8]:
+        label = state._link_labels.get(url) or _url_to_label(url)
+        candidates.append({
+            "url": url,
+            "label": label,
+            "reason": "",
+            "confidence": score_drill_link(state.current_url, url),
+        })
+    return candidates
+
+
 def _handle_auto_mode(
     state: DiscoveryState, on_progress=None
 ) -> tuple[DiscoveryState, Decision | None]:
     """Handle auto mode - use LLM to decide, then confirm with user."""
-    # Analyze nesting with LLM
+    # Build enriched link context for the LLM (URL + anchor text + nav flag)
+    link_context = [
+        {"href": url, "text": state._link_labels.get(url, ""), "in_nav": False}
+        for url in state._unvisited_links
+    ]
+
     nesting_result = analyze_nesting(
         state.current_url,
         state._current_dom_summary,
         state._current_schema,
-        state._unvisited_links,
+        link_context,
         on_progress,
     )
 
     is_final = nesting_result.get("is_final_level", True)
 
     if on_progress:
-        reasoning = nesting_result.get("reasoning", "")
         on_progress("Nesting analysis", f"Final level: {is_final}")
+        reasoning = nesting_result.get("reasoning", "")
         if reasoning:
             on_progress("Reason", reasoning)
 
-    # Store nesting result in schema for later use
+    # Store nesting result in schema so it's persisted on the level
     if state._current_schema:
         state._current_schema["nesting_analysis"] = nesting_result
 
+    # Map ranked_candidates indices → resolved URLs with labels
+    ranked_candidates = _resolve_ranked_candidates(nesting_result, state)
+
+    schema_summary = {
+        "catalog_type": (state._current_schema or {}).get("catalog_type"),
+        "item_name": ((state._current_schema or {}).get("item_schema") or {}).get("item_name"),
+        "field_count": len(((state._current_schema or {}).get("item_schema") or {}).get("fields", [])),
+    }
+
     if is_final:
-        # LLM says this is final - ask user to confirm
         decision = Decision(
             id=DecisionId.CONFIRM_FINAL_LEVEL,
             type=DecisionType.CONFIRM_FINAL_LEVEL,
@@ -233,35 +338,19 @@ def _handle_auto_mode(
                 "current_level": state.current_level,
                 "reasoning": nesting_result.get("reasoning"),
                 "available_links": state._unvisited_links[:10],
-                "schema_summary": {
-                    "catalog_type": state._current_schema.get("catalog_type") if state._current_schema else None,
-                    "item_name": state._current_schema.get("item_schema", {}).get("item_name") if state._current_schema else None,
-                    "field_count": len(state._current_schema.get("item_schema", {}).get("fields", [])) if state._current_schema else 0,
-                },
+                "ranked_candidates": ranked_candidates,
+                "schema_summary": schema_summary,
             },
         )
         state.pending_decision = decision
         return state, decision
 
-    # LLM recommends drilling - ask user to confirm
-    link_index = nesting_result.get("recommended_link_index")
-    recommended_url = None
-
-    if link_index is not None:
-        try:
-            link_index = int(link_index)
-            if 0 <= link_index < len(state._unvisited_links):
-                recommended_url = state._unvisited_links[link_index]
-        except (TypeError, ValueError):
-            if on_progress:
-                on_progress("Warning", f"Invalid link index: {link_index}")
-
+    # LLM recommends drilling — derive recommended_url from top ranked candidate
+    recommended_url = ranked_candidates[0]["url"] if ranked_candidates else None
     if not recommended_url and state._unvisited_links:
-        # Fall back to first available link
         recommended_url = state._unvisited_links[0]
 
     if not recommended_url:
-        # No links to drill - finalize with confirmation
         decision = Decision(
             id=DecisionId.CONFIRM_FINAL_LEVEL,
             type=DecisionType.CONFIRM_FINAL_LEVEL,
@@ -272,15 +361,16 @@ def _handle_auto_mode(
                 "current_url": state.current_url,
                 "current_level": state.current_level,
                 "reasoning": "No unvisited links available for drilling",
+                "ranked_candidates": [],
             },
         )
         state.pending_decision = decision
         return state, decision
 
     if on_progress:
-        on_progress("Recommended drill URL", recommended_url)
+        label = state._link_labels.get(recommended_url) or recommended_url
+        on_progress("Recommended drill", label)
 
-    # Create decision for user confirmation
     decision = Decision(
         id=DecisionId.CONFIRM_DRILLING,
         type=DecisionType.CONFIRM_DRILLING,
@@ -293,11 +383,92 @@ def _handle_auto_mode(
             "reasoning": nesting_result.get("reasoning"),
             "drill_down_selector": nesting_result.get("drill_down_link_selector"),
             "link_reason": nesting_result.get("recommended_link_reason"),
+            "ranked_candidates": ranked_candidates,
         },
     )
 
     state.pending_decision = decision
     return state, decision
+
+
+def _resolve_ranked_candidates(nesting_result: dict, state: DiscoveryState) -> list[dict]:
+    """
+    Map the LLM's ranked_candidates (index-based) to resolved URLs with labels.
+
+    Falls back to the top scored links from the pool if the LLM returns nothing.
+    """
+    candidates: list[dict] = []
+
+    for raw in nesting_result.get("ranked_candidates", []):
+        idx = raw.get("link_index")
+        if idx is None:
+            continue
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= idx < len(state._unvisited_links)):
+            continue
+        url = state._unvisited_links[idx]
+        label = (
+            raw.get("label")
+            or state._link_labels.get(url)
+            or _url_to_label(url)
+        )
+        candidates.append({
+            "url": url,
+            "label": label,
+            "reason": raw.get("reason", ""),
+            "confidence": float(raw.get("confidence", 0.0)),
+        })
+
+    if not candidates:
+        candidates = _build_ranked_candidates_from_pool(state)
+
+    return candidates
+
+
+def _resolve_drill_url(user_input: dict, decision, state: DiscoveryState) -> str | None:
+    """
+    Resolve which URL to drill into from user_input.
+
+    Priority:
+    1. selected_url explicitly provided (new UI sends this)
+    2. link_index into _unvisited_links (CLI / legacy)
+    3. recommended_url from the decision context
+    4. First unvisited link
+    """
+    selected_url = user_input.get("selected_url")
+    if selected_url and selected_url in state._unvisited_links:
+        return selected_url
+
+    link_index = user_input.get("link_index")
+    if link_index is not None:
+        try:
+            idx = int(link_index)
+            if 0 <= idx < len(state._unvisited_links):
+                return state._unvisited_links[idx]
+        except (TypeError, ValueError):
+            pass
+
+    recommended = decision.context.get("recommended_url") if decision else None
+    if recommended and recommended in state._unvisited_links:
+        return recommended
+
+    return state._unvisited_links[0] if state._unvisited_links else None
+
+
+def _drill_to(state: DiscoveryState, next_url: str, on_progress=None) -> DiscoveryState:
+    """Add the current level to the chain and move state to next_url."""
+    state = _add_level_to_chain(state, on_progress)
+    state.current_url = next_url
+    state.current_level += 1
+    state._current_html = None
+    state._current_dom_summary = None
+    state._current_schema = None
+    state._unvisited_links = []
+    state._link_labels = {}
+    return state
 
 
 def _handle_user_input(
@@ -309,11 +480,11 @@ def _handle_user_input(
         return state
 
     state.pending_decision = None
+
     if decision.type == DecisionType.CONFIRM_DRILLING:
         choice = user_input.get("choice", "continue")
 
         if choice == "final":
-            # User says this is final - reanalyze as detail page
             state._current_schema = infer_schema(
                 state.current_url,
                 state._current_dom_summary,
@@ -328,29 +499,17 @@ def _handle_user_input(
             return _add_level_and_mark_done(state, on_progress)
 
         else:  # continue
-            # Proceed to next level
-            recommended_url = decision.context.get("recommended_url")
-            if recommended_url:
-                # Add current level to chain
-                state = _add_level_to_chain(state, on_progress)
-                # Move to next level
-                state.current_url = recommended_url
-                state.current_level += 1
-                # Reset page state
-                state._current_html = None
-                state._current_dom_summary = None
-                state._current_schema = None
-                state._unvisited_links = []
+            next_url = _resolve_drill_url(user_input, decision, state)
+            if next_url:
+                state = _drill_to(state, next_url, on_progress)
             return state
 
     elif decision.type == DecisionType.CONFIRM_FINAL_LEVEL:
         choice = user_input.get("choice", "confirm")
 
         if choice == "confirm":
-            # User confirms this is final level
             if on_progress:
                 on_progress("Confirmed final level", state.current_url)
-            # Re-analyze as detail page if needed
             if not state._current_schema or not state._current_schema.get("item_schema", {}).get("fields"):
                 state._current_schema = infer_schema(
                     state.current_url,
@@ -361,27 +520,15 @@ def _handle_user_input(
             return _add_level_and_mark_done(state, on_progress)
 
         elif choice == "drill":
-            # User wants to drill despite AI recommendation
-            selected_index = user_input.get("link_index", 0)
-            if 0 <= selected_index < len(state._unvisited_links):
-                selected_url = state._unvisited_links[selected_index]
-                # Add current level to chain
-                state = _add_level_to_chain(state, on_progress)
-                # Move to next level
-                state.current_url = selected_url
-                state.current_level += 1
-                # Reset page state
-                state._current_html = None
-                state._current_dom_summary = None
-                state._current_schema = None
-                state._unvisited_links = []
+            next_url = _resolve_drill_url(user_input, decision, state)
+            if next_url:
+                state = _drill_to(state, next_url, on_progress)
             return state
 
     elif decision.type == DecisionType.SELECT_LINK:
         choice = user_input.get("choice", "final")
 
         if choice == "final":
-            # User confirms this is final
             state._current_schema = infer_schema(
                 state.current_url,
                 state._current_dom_summary,
@@ -391,20 +538,9 @@ def _handle_user_input(
             return _add_level_and_mark_done(state, on_progress)
 
         elif choice == "drill":
-            # User wants to drill - get selected link
-            selected_index = user_input.get("link_index", 0)
-            if 0 <= selected_index < len(state._unvisited_links):
-                selected_url = state._unvisited_links[selected_index]
-                # Add current level to chain
-                state = _add_level_to_chain(state, on_progress)
-                # Move to next level
-                state.current_url = selected_url
-                state.current_level += 1
-                # Reset page state
-                state._current_html = None
-                state._current_dom_summary = None
-                state._current_schema = None
-                state._unvisited_links = []
+            next_url = _resolve_drill_url(user_input, decision, state)
+            if next_url:
+                state = _drill_to(state, next_url, on_progress)
             return state
 
     return state
@@ -490,39 +626,26 @@ def _update_plan_from_chain(
     state: DiscoveryState, on_progress=None
 ) -> DiscoveryState:
     """Update the plan from the schema chain."""
-    # Convert schema chain to format expected by merge_schemas
-    schema_chain_dicts = []
-    for level_schema in state.plan.schema_chain:
-        schema_chain_dicts.append({
-            "level": level_schema.level,
-            "url": level_schema.url,
-            "schema": {
-                "is_catalog": level_schema.is_catalog,
-                "catalog_type": level_schema.catalog_type,
-                "confidence": level_schema.confidence,
-                "archetype": level_schema.archetype,
-                "reasoning": level_schema.reasoning,
-                "item_schema": {
-                    "item_name": level_schema.item_name,
-                    "item_container_selector": level_schema.item_container_selector,
-                    "fields": [f.to_dict() for f in level_schema.fields],
-                },
-            },
-            "nesting_analysis": level_schema.nesting_analysis,
-        })
+    chain = state.plan.schema_chain
 
-    # Merge schemas
-    merged = merge_schemas(schema_chain_dicts, on_progress)
+    if chain:
+        # item_name comes from the final (deepest) level
+        final_level = chain[-1]
+        state.plan.item_name = final_level.item_name or "Item"
+        state.plan.nesting_depth = len(chain)
+        state.plan.level_names = [
+            ls.catalog_type or f"level_{ls.level}" for ls in chain
+        ]
+    else:
+        state.plan.item_name = "Item"
+        state.plan.nesting_depth = 1
+        state.plan.level_names = []
 
-    # Update plan
-    state.plan.item_name = merged.get("item_name", "Item")
-    state.plan.nesting_depth = merged.get("nesting_depth", 1)
-    state.plan.level_names = merged.get("level_names", [])
-    state.plan.fields = [Field.from_dict(f) for f in merged.get("fields", [])]
     state.plan.visited_urls = list(state.visited_urls)
 
     if on_progress:
-        on_progress("Discovery complete", f"{len(state.plan.fields)} fields, {state.plan.nesting_depth} levels")
+        total_fields = sum(len(ls.fields) for ls in chain)
+        on_progress("Discovery complete", f"{total_fields} fields, {state.plan.nesting_depth} levels")
 
     return state
 

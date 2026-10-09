@@ -206,6 +206,37 @@ def resolve_url(base_url: str, link: str) -> str:
     return urljoin(base_url, link)
 
 
+def is_same_domain(base_url: str, candidate_url: str) -> bool:
+    """Check if candidate_url is on the same domain as base_url."""
+    base_parsed = urlparse(base_url)
+    cand_parsed = urlparse(candidate_url)
+    return base_parsed.netloc.lower() == cand_parsed.netloc.lower()
+
+
+def score_drill_link(root_url: str, candidate_url: str) -> float:
+    """
+    Score how likely a candidate URL is to be a drill-down from root_url.
+
+    Returns a float where higher means more likely to be a catalog item link:
+    - 1.0: candidate extends root_url's path (e.g. /program/film-slug/ from /program/)
+    - 0.3: same domain but a sibling/unrelated path
+    - 0.0: cross-domain
+    """
+    root_parsed = urlparse(root_url)
+    cand_parsed = urlparse(candidate_url)
+
+    if root_parsed.netloc.lower() != cand_parsed.netloc.lower():
+        return 0.0
+
+    root_path = root_parsed.path.rstrip("/")
+    cand_path = cand_parsed.path.rstrip("/")
+
+    if cand_path.startswith(root_path + "/"):
+        return 1.0
+
+    return 0.3
+
+
 def is_valid_drill_link(link: str, base_url: str) -> bool:
     """
     Check if a link is valid for drilling deeper.
@@ -215,6 +246,7 @@ def is_valid_drill_link(link: str, base_url: str) -> bool:
     - Fragment-only links (#)
     - JavaScript/mailto/tel links
     - Links that resolve to the same page
+    - Cross-domain links
     """
     if not link:
         return False
@@ -223,30 +255,32 @@ def is_valid_drill_link(link: str, base_url: str) -> bool:
         return False
     # Skip if it resolves to the same page
     resolved = resolve_url(base_url, link)
-    # Remove trailing slashes and fragments for comparison
     base_normalized = base_url.rstrip("/").split("#")[0].split("?")[0]
     resolved_normalized = resolved.rstrip("/").split("#")[0].split("?")[0]
     if base_normalized == resolved_normalized:
         return False
+    # Skip cross-domain links
+    if not is_same_domain(base_url, resolved):
+        return False
     return True
 
 
-def get_resolved_links(base_url: str, link_samples: list[str]) -> list[str]:
+def get_resolved_links(base_url: str, link_samples: list) -> list[str]:
     """
     Resolve all links to absolute URLs, filtering out invalid ones.
 
     Args:
         base_url: The base URL to resolve against
-        link_samples: List of (potentially relative) links
+        link_samples: List of links — either str hrefs or dicts with an 'href' key
 
     Returns:
-        List of resolved absolute URLs (deduplicated)
+        List of resolved absolute URLs (deduplicated, same order as input)
     """
     result = []
     for link in link_samples:
-        if is_valid_drill_link(link, base_url):
-            resolved = resolve_url(base_url, link)
-            # Deduplicate
+        href = link["href"] if isinstance(link, dict) else link
+        if is_valid_drill_link(href, base_url):
+            resolved = resolve_url(base_url, href)
             if resolved not in result:
                 result.append(resolved)
     return result

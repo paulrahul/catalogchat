@@ -781,11 +781,12 @@ def _handle_drilling_response(
             detail="No active discovery for this URL. Start discovery first.",
         )
 
-    # Map action to user_input format expected by advance_discovery
     user_input = {"choice": action}
 
-    # If payload contains link_index (for drill action), include it
-    if "link_index" in payload:
+    # selected_url takes priority over link_index
+    if "selected_url" in payload:
+        user_input["selected_url"] = payload["selected_url"]
+    elif "link_index" in payload:
         user_input["link_index"] = payload["link_index"]
 
     # Advance discovery with user input
@@ -827,23 +828,14 @@ def _handle_link_selection_response(
             detail="No active discovery for this URL. Start discovery first.",
         )
 
-    # Build user_input based on action
     user_input = {"choice": action}
 
-    # If drilling, get link index from payload or use default
     if action == "drill":
-        link_index = payload.get("link_index", 0)
-        # Also check for selected_url in payload
+        # selected_url takes priority; fall back to link_index
         if "selected_url" in payload:
-            # Find the link index for this URL
-            selected_url = payload["selected_url"]
-            available_links = state._unvisited_links or []
-            try:
-                link_index = available_links.index(selected_url)
-            except ValueError:
-                # URL not found, use provided index or default
-                pass
-        user_input["link_index"] = link_index
+            user_input["selected_url"] = payload["selected_url"]
+        elif "link_index" in payload:
+            user_input["link_index"] = payload["link_index"]
 
     # Advance discovery
     state, next_decision = advance_discovery(
@@ -883,11 +875,12 @@ def _handle_final_level_response(
             detail="No active discovery for this URL. Start discovery first.",
         )
 
-    # Map action to user_input format expected by advance_discovery
     user_input = {"choice": action}
 
-    # If payload contains link_index (for drill action), include it
-    if "link_index" in payload:
+    # selected_url takes priority over link_index
+    if "selected_url" in payload:
+        user_input["selected_url"] = payload["selected_url"]
+    elif "link_index" in payload:
         user_input["link_index"] = payload["link_index"]
 
     # Advance discovery with user input

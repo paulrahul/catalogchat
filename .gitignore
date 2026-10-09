@@ -5,3 +5,11 @@ results/
 __pycache__/
 
 logs/
+
+.DS_Store
+
+.env
+
+.streamlit/secrets.toml
+
+*.pyc

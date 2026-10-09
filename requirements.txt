@@ -1,0 +1,14 @@
+# API server (uvicorn api.server:app --port 8080)
+fastapi
+uvicorn[standard]
+pydantic
+
+# Core library (catalog/)
+openai
+requests
+beautifulsoup4
+
+# Streamlit UI (python -m ui.run)
+streamlit
+pandas
+httpx
