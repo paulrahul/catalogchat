@@ -1,5 +1,12 @@
 # catalogchat
 
+Point it at a catalog website (films, products, listings) and it extracts the data into clean rows, without writing a custom scraper.
+An LLM works out the page structure, walks nested listing → detail pages with you confirming each step, infers the fields, and scrapes them to CSV or JSON.
+
+Built with Python, OpenAI, FastAPI, n8n workflows, and a Streamlit or plain-JS front end.
+
+![CatalogChat demo: an n8n workflow and the UI discovering a 3-level film catalog](docs/demo.gif)
+
 ## Components
 
 ### 1. N8N based solution
